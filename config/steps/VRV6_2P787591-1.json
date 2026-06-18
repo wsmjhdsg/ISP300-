@@ -1,0 +1,57 @@
+[
+  {
+    "type": "click",
+    "point_name": "CPU选择",
+    "wait": 0.5
+  },
+  {
+    "type": "type",
+    "text": "STM32H743",
+    "wait": 0.3
+  },
+  {
+    "type": "click",
+    "point_name": "STM32H743XI",
+    "wait": 0.5
+  },
+  {
+    "type": "click",
+    "point_name": "BUILE",
+    "wait": 0.5
+  },
+  {
+    "type": "click",
+    "point_name": "GET CPU",
+    "wait": 0.5
+  },
+  {
+    "type": "click",
+    "point_name": "OPEN",
+    "wait": 0.5
+  },
+  {
+    "type": "click",
+    "point_name": "COPY",
+    "wait": 0.5
+  },
+  {
+    "type": "click",
+    "point_name": "右击",
+    "wait": 0.5
+  },
+  {
+    "type": "key",
+    "key": "P",
+    "wait": 0.3
+  },
+  {
+    "type": "click",
+    "point_name": "1",
+    "wait": 0.5
+  },
+  {
+    "type": "click",
+    "point_name": "send",
+    "wait": 0.5
+  }
+]

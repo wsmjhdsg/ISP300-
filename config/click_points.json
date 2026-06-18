@@ -1,0 +1,57 @@
+{
+  "send": {
+    "x": 968,
+    "y": 400,
+    "button": "left"
+  },
+  "软件地址选择": {
+    "x": 1389,
+    "y": 276,
+    "button": "left"
+  },
+  "软件地址打开": {
+    "x": 1665,
+    "y": 966,
+    "button": "left"
+  },
+  "CPU选择": {
+    "x": 805,
+    "y": 337,
+    "button": "left"
+  },
+  "STM32H743XI": {
+    "x": 253,
+    "y": 372,
+    "button": "left"
+  },
+  "BUILE": {
+    "x": 772,
+    "y": 680,
+    "button": "left"
+  },
+  "GET CPU": {
+    "x": 127,
+    "y": 165,
+    "button": "left"
+  },
+  "OPEN": {
+    "x": 275,
+    "y": 231,
+    "button": "left"
+  },
+  "COPY": {
+    "x": 180,
+    "y": 164,
+    "button": "left"
+  },
+  "右击": {
+    "x": 656,
+    "y": 548,
+    "button": "right"
+  },
+  "1": {
+    "x": 947,
+    "y": 500,
+    "button": "left"
+  }
+}
