@@ -1,4 +1,4 @@
-﻿from typing import Dict, Final
+from typing import Dict, Final
 
 
 class MouseButtons:
@@ -64,7 +64,9 @@ class UISettings:
 class SimulatorConfig:
     MOVE_DURATION: Final[float] = 0.2
     MOVE_PAUSE: Final[float] = 0.2
-    MOUSE_TOLERANCE: Final[int] = 5
+    # 鼠标移动容差(像素): 生产线有震动时鼠标会轻微抖动, 默认 5 像素过小易误中断。
+    # 若仍误触发可继续调大(如 20); 若希望更灵敏可调小。
+    MOUSE_TOLERANCE: Final[int] = 15
     MOUSE_CHECK_INTERVAL: Final[float] = 0.1
     TYPE_INTERVAL: Final[float] = 0.05
     IME_SWITCH_DELAY: Final[float] = 0.2

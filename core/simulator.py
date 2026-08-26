@@ -63,7 +63,9 @@ class Simulator:
             HKL_ENGLISH = user32.LoadKeyboardLayoutW("00000409", 1)
 
             if lang_id == 0x0409:
-                Simulator._original_hkl = None
+                # 已经是英文状态。注意: 不能清空 _original_hkl —— 它可能已记录本次
+                # 执行开始时的原始输入法(由 execute_steps 切换而来), 清空后执行结束
+                # 时 _restore_ime 将无法把输入法切回去。
                 return False
 
             Simulator._original_hkl = current_hkl
@@ -86,7 +88,7 @@ class Simulator:
             return True
         except Exception as e:
             logger.warning(f"Failed to switch to English IME: {e}")
-            Simulator._original_hkl = None
+            # 失败时同样不清空 _original_hkl, 保留原始输入法句柄以便执行结束时恢复
             return False
 
     @staticmethod
