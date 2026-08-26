@@ -1,25 +1,23 @@
-"""
-点击位置记录器
-通过监听鼠标点击来记录屏幕位置和按键类型（左键 / 右键 / 双击）
-鼠标按键方式必须明确区分，不使用"默认"。
-"""
-from pynput import mouse
+import threading
 import time
+from typing import Callable, Optional
+
+from pynput import mouse
+
+from core.constants import MouseButtons, RecorderConfig
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ClickRecorder:
+    def __init__(self) -> None:
+        self.listener: Optional[mouse.Listener] = None
+        self.is_recording: bool = False
+        self.callback: Optional[Callable[[dict], None]] = None
+        self._last_left_click_time: float = 0
 
-    # 双击判定阈值（秒）——两次左键点击间隔小于该值视为双击
-    DOUBLE_CLICK_INTERVAL = 0.3
-
-    def __init__(self):
-        self.listener = None
-        self.is_recording = False
-        self.callback = None
-        self._last_left_click_time = 0
-
-    def start(self, callback=None):
-        """开始记录。捕获一次鼠标点击（左键 / 右键 / 双击）后自动停止。"""
+    def start(self, callback: Optional[Callable[[dict], None]] = None) -> None:
         if self.is_recording:
             return
         self.callback = callback
@@ -30,38 +28,45 @@ class ClickRecorder:
             if not self.is_recording:
                 return False
             if not pressed:
-                return True  # 只处理按下事件, 不处理松开
+                return True
 
-            btn_str = None
+            btn_str: Optional[str] = None
             now = time.time()
 
             if button == mouse.Button.left:
-                # 判定是否为双击(与上一次左键点击的时间差)
-                if now - self._last_left_click_time < ClickRecorder.DOUBLE_CLICK_INTERVAL:
-                    btn_str = "double"  # 明确标记为双击
+                if (
+                    now - self._last_left_click_time
+                    < RecorderConfig.DOUBLE_CLICK_INTERVAL
+                ):
+                    btn_str = MouseButtons.DOUBLE
                 else:
-                    # 先不要立即提交, 再等一小段时间看是否有下一次点击
                     self._last_left_click_time = now
-                    # 延迟判定: 如果在 DOUBLE_CLICK_INTERVAL 内没有第二次点击, 则视为普通左键
+
                     def _delayed_check():
-                        time.sleep(ClickRecorder.DOUBLE_CLICK_INTERVAL + 0.05)
+                        time.sleep(
+                            RecorderConfig.DOUBLE_CLICK_INTERVAL
+                            + RecorderConfig.DOUBLE_CLICK_DELAY_BUFFER
+                        )
                         if not self.is_recording:
-                            return  # 已经在双击时提交
+                            return
                         if self._last_left_click_time == now:
-                            # 间隔期内没有新的左键, 视为普通左键单击
-                            point = {"x": int(x), "y": int(y), "button": "left"}
+                            point = {
+                                "x": int(x),
+                                "y": int(y),
+                                "button": MouseButtons.LEFT,
+                            }
                             self.is_recording = False
                             if self.callback:
                                 try:
                                     self.callback(point)
-                                except Exception:
-                                    pass
-                    import threading
+                                except Exception as e:
+                                    logger.debug(f"Callback error: {e}")
+
                     threading.Thread(target=_delayed_check, daemon=True).start()
                     return True
 
             elif button == mouse.Button.right:
-                btn_str = "right"  # 明确标记为右键单击
+                btn_str = MouseButtons.RIGHT
 
             if btn_str:
                 point = {"x": int(x), "y": int(y), "button": btn_str}
@@ -69,19 +74,20 @@ class ClickRecorder:
                 if self.callback:
                     try:
                         self.callback(point)
-                    except Exception:
-                        pass
-                return False  # 停止监听
+                    except Exception as e:
+                        logger.debug(f"Callback error: {e}")
+                return False
 
             return True
 
         self.listener = mouse.Listener(on_click=on_click)
         self.listener.daemon = True
         self.listener.start()
+        logger.debug("Click recorder started")
 
-    def stop(self):
-        """主动停止记录（如用户按 ESC 取消）"""
+    def stop(self) -> None:
         self.is_recording = False
         if self.listener:
             self.listener.stop()
             self.listener = None
+        logger.debug("Click recorder stopped")

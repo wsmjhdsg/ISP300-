@@ -1,5 +1,14 @@
 [
   {
+    "type": "launch",
+    "path": "C:\\Users\\Public\\Desktop\\ISP300Host_ver5.lnk",
+    "wait": 8.0
+  },
+  {
+    "type": "wait",
+    "seconds": 8.0
+  },
+  {
     "type": "click",
     "point_name": "CPU选择",
     "wait": 0.5
@@ -7,7 +16,7 @@
   {
     "type": "type",
     "text": "STM32H743",
-    "wait": 0.3
+    "wait": 1.0
   },
   {
     "type": "click",

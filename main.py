@@ -1,5 +1,5 @@
 """
-ISP300 自动化烧录工具 - 主入口
+自动化脚本工具 - 主入口
 """
 from core.config_manager import ConfigManager
 from ui.main_window import MainWindow

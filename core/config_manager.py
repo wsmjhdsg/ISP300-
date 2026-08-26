@@ -1,225 +1,258 @@
-"""
-配置管理模块
-- 烧录器软件路径 (burner.json)
-- 机种及累进结构 (machines.json)
-- 点击坐标 + 点击方式 (click_points.json)
-- 每个"机种+累进"独立步序文件 (steps/机种_累进.json)
-"""
 import json
-import os
 import re
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ConfigManager:
-    _instance = None
+    _instance: Optional["ConfigManager"] = None
 
-    def __new__(cls):
+    def __new__(cls) -> "ConfigManager":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialize()
         return cls._instance
 
-    def _initialize(self):
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.config_dir = os.path.join(base_dir, "config")
-        os.makedirs(self.config_dir, exist_ok=True)
+    @classmethod
+    def reset_instance(cls) -> None:
+        cls._instance = None
 
-        self.steps_dir = os.path.join(self.config_dir, "steps")
-        os.makedirs(self.steps_dir, exist_ok=True)
+    def _initialize(self) -> None:
+        self._base_dir = Path(__file__).parent.parent.resolve()
+        self._config_dir = self._base_dir / "config"
+        self._config_dir.mkdir(exist_ok=True)
 
-        self.machines_file = os.path.join(self.config_dir, "machines.json")
-        self.click_points_file = os.path.join(self.config_dir, "click_points.json")
-        self.burner_file = os.path.join(self.config_dir, "burner.json")
+        self._steps_dir = self._config_dir / "steps"
+        self._steps_dir.mkdir(exist_ok=True)
 
-        # 数据结构：
-        # self.machines = { "机种名": ["累进1", "累进2", ...] }
-        self.machines = self._load_json(self.machines_file, default={})
+        self._machines_file = self._config_dir / "machines.json"
+        self._click_points_file = self._config_dir / "click_points.json"
+        self._burner_file = self._config_dir / "burner.json"
 
-        # 兼容旧格式升级（如果之前是 {机种: {"rates": {...}}} 结构，自动转成新格式）
+        self.machines: Dict[str, List[str]] = self._load_json(
+            self._machines_file, default={}
+        )
         self._migrate_old_format()
 
-        # self.click_points = { "名称": {"x": 100, "y": 200, "button": "left"} }
-        self.click_points = self._load_json(self.click_points_file, default={})
+        raw_click_points = self._load_json(self._click_points_file, default={})
+        self.click_points: Dict[str, dict] = {}
+        for name, data in raw_click_points.items():
+            if isinstance(data, dict):
+                self.click_points[name] = data
 
-        # self.burner = { "path": "C:\\...\\ISP300.exe" }
-        self.burner = self._load_json(self.burner_file, default={"path": ""})
+        raw_burner = self._load_json(self._burner_file, default={"path": ""})
+        self.burner: Dict[str, str] = (
+            raw_burner if isinstance(raw_burner, dict) else {"path": ""}
+        )
 
-    def _migrate_old_format(self):
-        """兼容旧格式 machines.json，将内嵌步骤拆到独立文件"""
+        self._steps_cache: Dict[Tuple[str, str], List[dict]] = {}
+        logger.info("ConfigManager initialized")
+
+    def _migrate_old_format(self) -> None:
         changed = False
         for machine, value in list(self.machines.items()):
             if isinstance(value, dict) and "rates" in value:
-                # 旧格式: {"rates": {rate: steps_array}}
                 new_rates = []
                 for rate, steps in value["rates"].items():
                     new_rates.append(rate)
-                    # 如果有步骤内容，存到独立文件
                     if steps:
-                        self.set_steps(machine, rate, steps)
+                        self._save_steps_to_disk(machine, rate, steps)
                 self.machines[machine] = new_rates
                 changed = True
         if changed:
-            self._save_json(self.machines_file, self.machines)
+            self._save_json(self._machines_file, self.machines)
+            logger.info("Migrated old machine format")
 
-    def _safe_name(self, name):
-        """将机种/累进名转为安全的文件名（替换特殊字符）"""
+    @staticmethod
+    def _safe_name(name: str) -> str:
         return re.sub(r'[\\/:*?"<>|]', "_", name)
 
-    def _step_file(self, machine, rate):
-        """返回某个机种+累进对应的步序文件路径"""
+    def _step_file_path(self, machine: str, rate: str) -> Path:
         filename = f"{self._safe_name(machine)}_{self._safe_name(rate)}.json"
-        return os.path.join(self.steps_dir, filename)
+        return self._steps_dir / filename
 
-    def _load_json(self, filepath, default):
-        if os.path.exists(filepath):
+    def _load_json(self, filepath: Path, default):
+        if filepath.exists():
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Failed to load {filepath}: {e}")
                 return default
         return default
 
-    def _save_json(self, filepath, data):
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    def _save_json(self, filepath: Path, data) -> None:
+        try:
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except IOError as e:
+            logger.error(f"Failed to save {filepath}: {e}")
+            raise
 
-    # ========== 烧录器设置 ==========
+    def _save_steps_to_disk(self, machine: str, rate: str, steps: List[dict]) -> None:
+        filepath = self._step_file_path(machine, rate)
+        self._save_json(filepath, steps)
 
-    def get_burner_path(self):
+    def get_burner_path(self) -> str:
         return self.burner.get("path", "")
 
-    def set_burner_path(self, path):
+    def set_burner_path(self, path: str) -> None:
         self.burner["path"] = path
-        self._save_json(self.burner_file, self.burner)
+        self._save_json(self._burner_file, self.burner)
+        logger.info(f"Burner path updated: {path}")
 
-    # ========== 机种管理 ==========
-
-    def get_machine_names(self):
+    def get_machine_names(self) -> List[str]:
         return list(self.machines.keys())
 
-    def get_machine_rates(self, name):
+    def get_machine_rates(self, name: str) -> List[str]:
         return list(self.machines.get(name, []))
 
-    def add_machine(self, name):
+    def add_machine(self, name: str) -> bool:
+        if not name or not name.strip():
+            return False
+        name = name.strip()
         if name not in self.machines:
             self.machines[name] = []
-            self._save_json(self.machines_file, self.machines)
+            self._save_json(self._machines_file, self.machines)
+            logger.info(f"Machine added: {name}")
             return True
         return False
 
-    def rename_machine(self, old_name, new_name):
+    def rename_machine(self, old_name: str, new_name: str) -> bool:
+        if not new_name or not new_name.strip():
+            return False
+        new_name = new_name.strip()
         if old_name in self.machines and new_name not in self.machines:
-            # 重命名机种时，对应的步序文件也要改名
             rates = self.machines[old_name]
             for rate in rates:
-                old_file = self._step_file(old_name, rate)
-                new_file = self._step_file(new_name, rate)
-                if os.path.exists(old_file):
-                    os.rename(old_file, new_file)
+                old_file = self._step_file_path(old_name, rate)
+                new_file = self._step_file_path(new_name, rate)
+                if old_file.exists():
+                    old_file.rename(new_file)
+                self._steps_cache.pop((old_name, rate), None)
             self.machines[new_name] = self.machines.pop(old_name)
-            self._save_json(self.machines_file, self.machines)
+            self._save_json(self._machines_file, self.machines)
+            logger.info(f"Machine renamed: {old_name} -> {new_name}")
             return True
         return False
 
-    def delete_machine(self, name):
+    def delete_machine(self, name: str) -> bool:
         if name in self.machines:
-            # 删除机种时，连带删除它下面所有累进的步序文件
             rates = self.machines[name]
             for rate in rates:
-                f = self._step_file(name, rate)
-                if os.path.exists(f):
+                f = self._step_file_path(name, rate)
+                if f.exists():
                     try:
-                        os.remove(f)
-                    except OSError:
-                        pass
+                        f.unlink()
+                    except OSError as e:
+                        logger.warning(f"Failed to delete step file {f}: {e}")
+                self._steps_cache.pop((name, rate), None)
             del self.machines[name]
-            self._save_json(self.machines_file, self.machines)
+            self._save_json(self._machines_file, self.machines)
+            logger.info(f"Machine deleted: {name}")
             return True
         return False
 
-    def add_rate(self, machine, rate):
-        if machine in self.machines:
-            if rate not in self.machines[machine]:
-                self.machines[machine].append(rate)
-                self._save_json(self.machines_file, self.machines)
-                return True
+    def add_rate(self, machine: str, rate: str) -> bool:
+        if not rate or not rate.strip():
+            return False
+        rate = rate.strip()
+        if machine in self.machines and rate not in self.machines[machine]:
+            self.machines[machine].append(rate)
+            self._save_json(self._machines_file, self.machines)
+            logger.info(f"Rate added: {machine}/{rate}")
+            return True
         return False
 
-    def delete_rate(self, machine, rate):
+    def delete_rate(self, machine: str, rate: str) -> bool:
         if machine in self.machines and rate in self.machines[machine]:
-            # 删除累进时，对应的步序文件也删除
-            f = self._step_file(machine, rate)
-            if os.path.exists(f):
+            f = self._step_file_path(machine, rate)
+            if f.exists():
                 try:
-                    os.remove(f)
-                except OSError:
-                    pass
+                    f.unlink()
+                except OSError as e:
+                    logger.warning(f"Failed to delete step file {f}: {e}")
+            self._steps_cache.pop((machine, rate), None)
             self.machines[machine].remove(rate)
-            self._save_json(self.machines_file, self.machines)
+            self._save_json(self._machines_file, self.machines)
+            logger.info(f"Rate deleted: {machine}/{rate}")
             return True
         return False
 
-    def rename_rate(self, machine, old_rate, new_rate):
+    def rename_rate(self, machine: str, old_rate: str, new_rate: str) -> bool:
+        if not new_rate or not new_rate.strip():
+            return False
+        new_rate = new_rate.strip()
         if machine in self.machines and old_rate in self.machines[machine]:
             if new_rate not in self.machines[machine]:
-                # 对应的步序文件改名
-                old_file = self._step_file(machine, old_rate)
-                new_file = self._step_file(machine, new_rate)
-                if os.path.exists(old_file):
-                    os.rename(old_file, new_file)
+                old_file = self._step_file_path(machine, old_rate)
+                new_file = self._step_file_path(machine, new_rate)
+                if old_file.exists():
+                    old_file.rename(new_file)
+                self._steps_cache.pop((machine, old_rate), None)
                 idx = self.machines[machine].index(old_rate)
                 self.machines[machine][idx] = new_rate
-                self._save_json(self.machines_file, self.machines)
+                self._save_json(self._machines_file, self.machines)
+                logger.info(f"Rate renamed: {machine}/{old_rate} -> {new_rate}")
                 return True
         return False
 
-    # ========== 步序管理 (每个机种+累进存独立文件) ==========
+    def get_steps(self, machine: str, rate: str) -> List[dict]:
+        key = (machine, rate)
+        if key in self._steps_cache:
+            return list(self._steps_cache[key])
+        filepath = self._step_file_path(machine, rate)
+        steps: List[dict] = []
+        if filepath.exists():
+            data = self._load_json(filepath, default=[])
+            if isinstance(data, list):
+                steps = data
+        self._steps_cache[key] = steps
+        return list(steps)
 
-    def get_steps(self, machine, rate):
-        """读取某机种+累进的步骤数组"""
-        filepath = self._step_file(machine, rate)
-        if os.path.exists(filepath):
-            steps = self._load_json(filepath, default=[])
-            if isinstance(steps, list):
-                return steps
-        return []
-
-    def set_steps(self, machine, rate, steps):
-        """保存某机种+累进的步骤数组为独立 JSON 文件"""
-        filepath = self._step_file(machine, rate)
+    def set_steps(self, machine: str, rate: str, steps: List[dict]) -> bool:
+        filepath = self._step_file_path(machine, rate)
         self._save_json(filepath, steps)
+        self._steps_cache[(machine, rate)] = list(steps)
+        logger.info(f"Steps saved: {machine}/{rate} ({len(steps)} steps)")
         return True
 
-    def has_steps(self, machine, rate):
-        """检查是否存在该组合的步序文件"""
-        return os.path.exists(self._step_file(machine, rate))
+    def has_steps(self, machine: str, rate: str) -> bool:
+        return len(self.get_steps(machine, rate)) > 0
 
-    def get_steps_file(self, machine, rate):
-        """返回步序文件路径（供外部查看/调试）"""
-        return self._step_file(machine, rate)
+    def get_steps_file(self, machine: str, rate: str) -> str:
+        return str(self._step_file_path(machine, rate))
 
-    # ========== 点击位置管理 ==========
-
-    def get_click_point_names(self):
+    def get_click_point_names(self) -> List[str]:
         return list(self.click_points.keys())
 
-    def get_click_point(self, name):
-        return self.click_points.get(name, {})
+    def get_click_point(self, name: str) -> dict:
+        return dict(self.click_points.get(name, {}))
 
-    def add_click_point(self, name, x, y, button="left"):
-        self.click_points[name] = {"x": x, "y": y, "button": button}
-        self._save_json(self.click_points_file, self.click_points)
+    def add_click_point(self, name: str, x: int, y: int, button: str = "left") -> None:
+        self.click_points[name] = {"x": int(x), "y": int(y), "button": button}
+        self._save_json(self._click_points_file, self.click_points)
+        logger.info(f"Click point added: {name} ({x}, {y}) {button}")
 
-    def delete_click_point(self, name):
+    def delete_click_point(self, name: str) -> bool:
         if name in self.click_points:
             del self.click_points[name]
-            self._save_json(self.click_points_file, self.click_points)
+            self._save_json(self._click_points_file, self.click_points)
+            logger.info(f"Click point deleted: {name}")
             return True
         return False
 
-    def update_click_point(self, name, x, y, button="left"):
+    def update_click_point(
+        self, name: str, x: int, y: int, button: str = "left"
+    ) -> bool:
         if name in self.click_points:
-            self.click_points[name] = {"x": x, "y": y, "button": button}
-            self._save_json(self.click_points_file, self.click_points)
+            self.click_points[name] = {"x": int(x), "y": int(y), "button": button}
+            self._save_json(self._click_points_file, self.click_points)
+            logger.info(f"Click point updated: {name} ({x}, {y}) {button}")
             return True
         return False

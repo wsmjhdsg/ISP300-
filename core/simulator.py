@@ -1,138 +1,287 @@
-"""
-模拟操作模块
-- 点击: 先移动鼠标到坐标位置 -> 停顿 -> 点击 (按键方式必须明确指定, 不允许默认)
-- 输入文本: 区分大小写
-- 按键: 单个按键操作
-- 等待: 等待指定秒数
-"""
-import time
 import os
 import subprocess
+import threading
+import time
+from typing import Callable, Dict, List, Optional
+
 import pyautogui
+
+from core.constants import (
+    BUTTON_SHORT_LABELS,
+    MouseButtons,
+    SimulatorConfig,
+    StepTypes,
+)
+from core.exceptions import ExecutionInterruptedError
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class Simulator:
-
-    # 鼠标移动速度(秒) - 越小越快, 0=瞬间移动, 0.2=平滑移动
-    MOVE_DURATION = 0.2
-    # 移动到目标位置后、点击前的停顿(秒) - 让操作者看到鼠标已到位
-    MOVE_PAUSE = 0.2
-
-    # 允许的按键方式 (必须明确选择, 不允许默认)
-    VALID_BUTTONS = ["left", "right", "double"]
+    _original_hkl: Optional[int] = None
+    _expected_pos: Optional[tuple] = None
+    _mouse_interrupted: bool = False
+    _monitoring: bool = False
+    _monitor_thread: Optional[threading.Thread] = None
+    _monitor_lock: threading.Lock = threading.Lock()
 
     @staticmethod
-    def launch_program(path):
-        """启动外部程序(如烧录器软件)"""
+    def launch_program(path: str) -> bool:
         if not path or not os.path.exists(path):
+            logger.warning(f"Program path not found: {path}")
             return False
         try:
-            os.startfile(path) if os.name == "nt" else subprocess.Popen([path])
+            if os.name == "nt":
+                os.startfile(path)
+            else:
+                subprocess.Popen([path])
+            logger.info(f"Launched program: {path}")
             return True
         except Exception as e:
-            print(f"启动失败: {e}")
+            logger.error(f"Failed to launch program {path}: {e}")
             return False
 
     @staticmethod
-    def click(x, y, button="left", wait=0.5):
-        """
-        先移动鼠标到坐标位置, 再执行点击操作(过程可视化)
-        button 必须是 left/right/double 之一, 不允许使用默认值
-        """
-        if button not in Simulator.VALID_BUTTONS:
-            button = "left"  # 兜底
+    def _switch_to_english_ime() -> bool:
+        if os.name != "nt":
+            return False
         try:
-            # 第一步: 平滑移动鼠标到目标坐标
-            pyautogui.moveTo(x, y, duration=Simulator.MOVE_DURATION)
-            # 第二步: 短暂停顿, 让操作者看到鼠标已到位
-            time.sleep(Simulator.MOVE_PAUSE)
-            # 第三步: 根据按键方式执行点击
-            if button == "right":
+            user32 = __import__("ctypes").windll.user32
+            kernel32 = __import__("ctypes").windll.kernel32
+
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return False
+
+            target_thread_id = user32.GetWindowThreadProcessId(hwnd, None)
+            current_thread_id = kernel32.GetCurrentThreadId()
+
+            current_hkl = user32.GetKeyboardLayout(target_thread_id)
+            lang_id = current_hkl & 0xFFFF
+
+            HKL_ENGLISH = user32.LoadKeyboardLayoutW("00000409", 1)
+
+            if lang_id == 0x0409:
+                Simulator._original_hkl = None
+                return False
+
+            Simulator._original_hkl = current_hkl
+
+            if target_thread_id != current_thread_id:
+                user32.AttachThreadInput(current_thread_id, target_thread_id, True)
+
+            user32.ActivateKeyboardLayout(HKL_ENGLISH, 0)
+
+            if target_thread_id != current_thread_id:
+                user32.AttachThreadInput(current_thread_id, target_thread_id, False)
+
+            try:
+                user32.SendMessageW(hwnd, 0x0050, 2, HKL_ENGLISH)
+            except Exception:
+                pass
+
+            time.sleep(SimulatorConfig.IME_SWITCH_DELAY)
+            logger.debug("Switched to English IME")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to switch to English IME: {e}")
+            Simulator._original_hkl = None
+            return False
+
+    @staticmethod
+    def _restore_ime() -> None:
+        if os.name != "nt" or Simulator._original_hkl is None:
+            return
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                Simulator._original_hkl = None
+                return
+
+            target_thread_id = user32.GetWindowThreadProcessId(hwnd, None)
+            current_thread_id = kernel32.GetCurrentThreadId()
+
+            if target_thread_id != current_thread_id:
+                user32.AttachThreadInput(current_thread_id, target_thread_id, True)
+
+            user32.ActivateKeyboardLayout(Simulator._original_hkl, 0)
+
+            if target_thread_id != current_thread_id:
+                user32.AttachThreadInput(current_thread_id, target_thread_id, False)
+
+            try:
+                user32.SendMessageW(hwnd, 0x0050, 2, Simulator._original_hkl)
+            except Exception:
+                pass
+
+            time.sleep(SimulatorConfig.IME_SWITCH_DELAY)
+            Simulator._original_hkl = None
+            logger.debug("Restored original IME")
+        except Exception as e:
+            logger.debug(f"Failed to restore IME: {e}")
+            Simulator._original_hkl = None
+
+    @staticmethod
+    def _start_mouse_monitor() -> None:
+        with Simulator._monitor_lock:
+            Simulator._mouse_interrupted = False
+            Simulator._expected_pos = None
+            Simulator._monitoring = True
+
+        Simulator._monitor_thread = threading.Thread(
+            target=Simulator._monitor_loop, daemon=True
+        )
+        Simulator._monitor_thread.start()
+
+    @staticmethod
+    def _stop_mouse_monitor() -> None:
+        with Simulator._monitor_lock:
+            Simulator._monitoring = False
+        if Simulator._monitor_thread:
+            Simulator._monitor_thread.join(timeout=0.5)
+        Simulator._monitor_thread = None
+
+    @staticmethod
+    def _monitor_loop() -> None:
+        while True:
+            with Simulator._monitor_lock:
+                if not Simulator._monitoring:
+                    break
+
+            try:
+                current_x, current_y = pyautogui.position()
+
+                with Simulator._monitor_lock:
+                    expected = Simulator._expected_pos
+
+                if expected is not None:
+                    dx = abs(current_x - expected[0])
+                    dy = abs(current_y - expected[1])
+                    if (
+                        dx > SimulatorConfig.MOUSE_TOLERANCE
+                        or dy > SimulatorConfig.MOUSE_TOLERANCE
+                    ):
+                        with Simulator._monitor_lock:
+                            Simulator._mouse_interrupted = True
+                            Simulator._monitoring = False
+                        logger.info("Execution interrupted by user mouse movement")
+                        break
+            except Exception:
+                pass
+
+            time.sleep(SimulatorConfig.MOUSE_CHECK_INTERVAL)
+
+    @staticmethod
+    def _update_expected_pos(x: int, y: int) -> None:
+        with Simulator._monitor_lock:
+            Simulator._expected_pos = (int(x), int(y))
+
+    @staticmethod
+    def _is_interrupted() -> bool:
+        with Simulator._monitor_lock:
+            return Simulator._mouse_interrupted
+
+    @staticmethod
+    def click(x: int, y: int, button: str = MouseButtons.LEFT) -> bool:
+        if button not in MouseButtons.VALID:
+            logger.warning(f"Invalid button '{button}', falling back to left click")
+            button = MouseButtons.LEFT
+        try:
+            pyautogui.moveTo(x, y, duration=SimulatorConfig.MOVE_DURATION)
+            Simulator._update_expected_pos(x, y)
+            time.sleep(SimulatorConfig.MOVE_PAUSE)
+
+            if button == MouseButtons.RIGHT:
                 pyautogui.rightClick()
-            elif button == "double":
+            elif button == MouseButtons.DOUBLE:
                 pyautogui.doubleClick()
             else:
                 pyautogui.click()
-            # 第四步: 点击后等待(给软件响应时间)
-            time.sleep(wait)
+
+            Simulator._update_expected_pos(x, y)
+            logger.debug(f"Clicked at ({x}, {y}) with {button}")
             return True
         except Exception as e:
-            print(f"点击失败 ({x}, {y}): {e}")
+            logger.error(f"Click failed at ({x}, {y}): {e}")
             return False
 
     @staticmethod
-    def type_text(text, wait=0.3):
-        """
-        输入文本, 区分大小写
-        pyautogui.typewrite 本身就区分大小写:
-          - "Hello" -> 会正确输入大写H和小写ello
-          - "ABC123" -> 会正确输入大写字母
-        """
+    def type_text(text: str) -> bool:
         try:
-            pyautogui.typewrite(text, interval=0.05)
-            time.sleep(wait)
+            Simulator._switch_to_english_ime()
+            pyautogui.typewrite(text, interval=SimulatorConfig.TYPE_INTERVAL)
+            logger.debug(f"Typed text (length={len(text)})")
             return True
         except Exception as e:
-            print(f"输入失败 {text}: {e}")
+            logger.error(f"Type text failed: {e}")
             return False
 
     @staticmethod
-    def press_key(key, wait=0.3):
-        """按单个键, key 如: enter, tab, esc, f1, space, delete, backspace, shift, ctrl, alt"""
+    def press_key(key: str) -> bool:
         try:
             pyautogui.press(key)
-            time.sleep(wait)
+            logger.debug(f"Pressed key: {key}")
             return True
         except Exception as e:
-            print(f"按键失败 {key}: {e}")
+            logger.error(f"Key press failed '{key}': {e}")
             return False
 
     @staticmethod
-    def wait(seconds):
+    def wait(seconds: float) -> bool:
         time.sleep(max(0, seconds))
         return True
 
     @staticmethod
-    def execute_step(step, click_points_map):
+    def execute_step(step: dict, click_points_map: Dict[str, dict]) -> str:
         step_type = step.get("type", "")
-        wait = step.get("wait", 0.5)
 
-        if step_type == "click":
+        if step_type == StepTypes.LAUNCH:
+            path = step.get("path", "")
+            if path:
+                ok = Simulator.launch_program(path)
+                display_path = path if len(path) <= 50 else "..." + path[-50:]
+                return f"{'启动软件成功' if ok else '[警告] 启动软件失败'}: {display_path}"
+            return "[跳过] 未指定软件路径"
+
+        elif step_type == StepTypes.CLICK:
             point_name = step.get("point_name", "")
             if point_name and point_name in click_points_map:
                 pt = click_points_map[point_name]
-                # 优先使用点击位置中记录的按键方式; 若步骤中显式指定则覆盖
-                button = step.get("button") or pt.get("button", "left")
-                if button not in Simulator.VALID_BUTTONS:
-                    button = "left"
-                Simulator.click(pt["x"], pt["y"], button=button, wait=wait)
-                btn_label = {"left": "左键", "right": "右键", "double": "双击"}.get(button, button)
+                button = step.get("button") or pt.get("button", MouseButtons.LEFT)
+                if button not in MouseButtons.VALID:
+                    button = MouseButtons.LEFT
+                Simulator.click(pt["x"], pt["y"], button=button)
+                btn_label = BUTTON_SHORT_LABELS.get(button, button)
                 return f"移动到[{point_name}]({pt['x']},{pt['y']}) → {btn_label}点击"
             else:
                 x = step.get("x")
                 y = step.get("y")
-                button = step.get("button", "left")
-                if button not in Simulator.VALID_BUTTONS:
-                    button = "left"
+                button = step.get("button", MouseButtons.LEFT)
+                if button not in MouseButtons.VALID:
+                    button = MouseButtons.LEFT
                 if x is not None and y is not None:
-                    Simulator.click(x, y, button=button, wait=wait)
-                    btn_label = {"left": "左键", "right": "右键", "double": "双击"}.get(button, button)
+                    Simulator.click(x, y, button=button)
+                    btn_label = BUTTON_SHORT_LABELS.get(button, button)
                     return f"移动到({x},{y}) → {btn_label}点击"
             return f"[跳过] 找不到点击位置: {point_name}"
 
-        elif step_type == "type":
+        elif step_type == StepTypes.TYPE:
             text = step.get("text", "")
-            Simulator.type_text(text, wait=wait)
-            # 显示文本的前20个字符, 太长用省略号
+            Simulator.type_text(text)
             display_text = text if len(text) <= 30 else text[:30] + "..."
             return f"输入文本(区分大小写): '{display_text}'"
 
-        elif step_type == "key":
+        elif step_type == StepTypes.KEY:
             key = step.get("key", "")
-            Simulator.press_key(key, wait=wait)
+            Simulator.press_key(key)
             return f"按键: [{key}]"
 
-        elif step_type == "wait":
+        elif step_type == StepTypes.WAIT:
             seconds = step.get("seconds", 1.0)
             Simulator.wait(seconds)
             return f"等待 {seconds} 秒"
@@ -140,41 +289,74 @@ class Simulator:
         return f"[跳过] 未知步骤类型: {step_type}"
 
     @staticmethod
-    def execute_steps(steps, click_points, progress_callback=None, log_callback=None):
-        """
-        按顺序执行一系列步骤
-        执行完成后返回执行统计信息
-        """
-        click_points_map = {name: data for name, data in click_points.items()}
+    def execute_steps(
+        steps: List[dict],
+        click_points: Dict[str, dict],
+        progress_callback: Optional[Callable[[int], None]] = None,
+        log_callback: Optional[Callable[[str], None]] = None,
+    ) -> dict:
+        def safe_log(msg: str) -> None:
+            if log_callback:
+                try:
+                    log_callback(msg)
+                except Exception:
+                    pass
+
+        def safe_progress(value: int) -> None:
+            if progress_callback:
+                try:
+                    progress_callback(value)
+                except Exception:
+                    pass
+
+        switched = Simulator._switch_to_english_ime()
+        if switched:
+            safe_log("[准备] 已切换输入法到英文状态, 确保模拟键盘输入有效")
+
+        Simulator._start_mouse_monitor()
+        safe_log("[准备] 鼠标监控已启动, 执行期间请勿移动鼠标")
+
+        click_points_map = {name: dict(data) for name, data in click_points.items()}
         total = len(steps)
         success_count = 0
+        interrupted = False
         start_time = time.time()
 
         for i, step in enumerate(steps):
+            if Simulator._is_interrupted():
+                interrupted = True
+                safe_log(
+                    f"[失败] 检测到用户手动移动鼠标, 执行已中止 (已完成 {i}/{total} 步)"
+                )
+                break
+
             result = Simulator.execute_step(step, click_points_map)
-            if log_callback:
-                try:
-                    log_callback(f"[{i+1}/{total}] {result}")
-                except Exception:
-                    pass
-            if progress_callback:
-                try:
-                    progress_callback(int((i + 1) / total * 100))
-                except Exception:
-                    pass
+            safe_log(f"[{i+1}/{total}] {result}")
+            safe_progress(int((i + 1) / total * 100))
             success_count += 1
 
         elapsed = round(time.time() - start_time, 1)
 
-        # 执行完成提示
+        Simulator._stop_mouse_monitor()
+
+        if switched:
+            Simulator._restore_ime()
+            safe_log("[完成] 已恢复原来的输入法")
+
         summary = {
             "total": total,
             "success": success_count,
-            "elapsed": elapsed
+            "elapsed": elapsed,
+            "interrupted": interrupted,
         }
-        if log_callback:
-            try:
-                log_callback(f"═══ 执行完成 ═══  总步数: {total}  成功: {success_count}  耗时: {elapsed}秒")
-            except Exception:
-                pass
+
+        if interrupted:
+            safe_log(
+                f"═══ 执行失败 ═══  总步数: {total}  已完成: {success_count}  耗时: {elapsed}秒  (检测到用户手动移动鼠标)"
+            )
+        else:
+            safe_log(
+                f"═══ 执行完成 ═══  总步数: {total}  成功: {success_count}  耗时: {elapsed}秒"
+            )
+
         return summary
