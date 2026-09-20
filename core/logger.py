@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from core.paths import app_base_dir
+
 
 _logger: Optional[logging.Logger] = None
 
@@ -27,7 +29,7 @@ def get_logger(name: str = "auto_isp") -> logging.Logger:
         _logger.addHandler(console_handler)
 
         try:
-            log_dir = Path(__file__).parent.parent / "logs"
+            log_dir = app_base_dir() / "logs"
             log_dir.mkdir(exist_ok=True)
             file_handler = logging.FileHandler(
                 log_dir / "auto_isp.log", encoding="utf-8"

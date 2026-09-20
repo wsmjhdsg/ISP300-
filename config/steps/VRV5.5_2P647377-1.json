@@ -1,0 +1,44 @@
+[
+  {
+    "type": "launch",
+    "path": "D:/1.mjh/AUTO ISP300/ISP300Host_ver5.lnk"
+  },
+  {
+    "type": "wait",
+    "seconds": 5.0
+  },
+  {
+    "type": "click",
+    "point_name": "Read I.S.P",
+    "button": "left"
+  },
+  {
+    "type": "click",
+    "point_name": "LOAD",
+    "button": "left"
+  },
+  {
+    "type": "openfile",
+    "mode": "path",
+    "path": "C:/1.产线用正式程序/1.MI3线烧录程序/2P647377 VRV5.5/-1-5烧录器1号位/111.i3S"
+  },
+  {
+    "type": "click",
+    "point_name": "11",
+    "button": "left"
+  },
+  {
+    "type": "click",
+    "point_name": "Send Data",
+    "button": "left"
+  },
+  {
+    "type": "waitresult",
+    "timeout": 120.0
+  },
+  {
+    "type": "click",
+    "point_name": "关闭",
+    "button": "left"
+  }
+]

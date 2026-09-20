@@ -50,8 +50,10 @@
     "button": "right"
   },
   "1": {
-    "x": 947,
-    "y": 500,
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 1,
+    "auto_id": "",
     "button": "left"
   },
   "12": {
@@ -62,6 +64,111 @@
   "SET": {
     "x": 398,
     "y": 472,
+    "button": "left"
+  },
+  "LOAD": {
+    "type": "control",
+    "control_type": "Button",
+    "title": "LOAD",
+    "auto_id": "LOADB",
+    "button": "left"
+  },
+  "Read I.S.P": {
+    "type": "control",
+    "control_type": "Button",
+    "title": "Read I.S.P",
+    "auto_id": "Read_Index",
+    "button": "left"
+  },
+  "Send Data": {
+    "type": "control",
+    "control_type": "Button",
+    "title": "Send Data",
+    "auto_id": "Tx_start",
+    "button": "left"
+  },
+  "18": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 18,
+    "auto_id": "",
+    "button": "left"
+  },
+  " 1 R5F5634E      15.9744    20011305mot      [2048] ASYNC": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": " 1 R5F5634E      15.9744    20011305mot      [2048] ASYNC",
+    "auto_id": "",
+    "button": "left"
+  },
+  " 2 TMPM3HxFDp     0.0000    F227ATES_V037-00 [ 483] SWD  ": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": " 2 TMPM3HxFDp     0.0000    F227ATES_V037-00 [ 483] SWD  ",
+    "auto_id": "",
+    "button": "left"
+  },
+  " 3 R5F3651M      15.9744    25010603_00200mo [ 512] E8a  ": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": " 3 R5F3651M      15.9744    25010603_00200mo [ 512] E8a  ",
+    "auto_id": "",
+    "button": "left"
+  },
+  "4": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 4,
+    "auto_id": "",
+    "button": "left"
+  },
+  "5": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 5,
+    "auto_id": "",
+    "button": "left"
+  },
+  "6": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 6,
+    "auto_id": "",
+    "button": "left"
+  },
+  "7": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 7,
+    "auto_id": "",
+    "button": "left"
+  },
+  " 8 TMPM374FWUG    0.0000    1700AA01srec     [ 128] SWD  ": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": " 8 TMPM374FWUG    0.0000    1700AA01srec     [ 128] SWD  ",
+    "auto_id": "",
+    "button": "left"
+  },
+  "9": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 9,
+    "auto_id": "",
+    "button": "left"
+  },
+  "11": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 11,
+    "auto_id": "",
+    "button": "left"
+  },
+  "关闭": {
+    "type": "control",
+    "control_type": "Button",
+    "title": "关闭",
+    "auto_id": "",
     "button": "left"
   }
 }

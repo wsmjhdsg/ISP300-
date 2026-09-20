@@ -14,6 +14,7 @@ class MachineEditorDialog(tk.Toplevel):
         self.title("机种编辑")
         self.geometry(UISettings.MACHINE_EDITOR_SIZE)
         self.minsize(760, 400)
+        self.configure(bg=UISettings.COLORS["bg_window"])
         self.config_manager = config_manager
 
         self.current_machine = None
@@ -80,13 +81,13 @@ class MachineEditorDialog(tk.Toplevel):
         self.status_label = ttk.Label(
             sf,
             text="请先在上方选择机种和累进",
-            foreground="gray",
+            foreground=UISettings.COLORS["text_secondary"],
             font=(UISettings.FONT_FAMILY, 11),
         )
         self.status_label.pack(pady=5, padx=10, anchor=tk.W)
 
         self.file_label = ttk.Label(
-            sf, text="", foreground="blue", font=(UISettings.FONT_FAMILY, 10)
+            sf, text="", foreground=UISettings.COLORS["info"], font=(UISettings.FONT_FAMILY, 10)
         )
         self.file_label.pack(pady=3, padx=10, anchor=tk.W)
 
@@ -131,6 +132,7 @@ class MachineEditorDialog(tk.Toplevel):
         self._update_status()
 
     def _update_status(self):
+        colors = UISettings.COLORS
         if self.current_machine and self.current_rate:
             steps = self.config_manager.get_steps(self.current_machine, self.current_rate)
             step_file = self.config_manager.get_steps_file(
@@ -139,20 +141,20 @@ class MachineEditorDialog(tk.Toplevel):
             if steps:
                 self.status_label.config(
                     text=f"已配置: 机种 [{self.current_machine}]  累进 [{self.current_rate}]  —  共 {len(steps)} 个步骤",
-                    foreground="green",
+                    foreground=colors["success"],
                 )
             else:
                 self.status_label.config(
                     text=f"未配置: 机种 [{self.current_machine}]  累进 [{self.current_rate}]  —  请点击下方按钮编辑步序",
-                    foreground="orange",
+                    foreground=colors["warning"],
                 )
             self.file_label.config(text=f"步序文件: {step_file}")
             self.edit_step_btn.config(state=tk.NORMAL)
         else:
             if not self.current_machine:
-                self.status_label.config(text="请先在上方选择或新增机种", foreground="gray")
+                self.status_label.config(text="请先在上方选择或新增机种", foreground=colors["text_secondary"])
             else:
-                self.status_label.config(text="请选择或新增一个累进", foreground="gray")
+                self.status_label.config(text="请选择或新增一个累进", foreground=colors["text_secondary"])
             self.file_label.config(text="")
             self.edit_step_btn.config(state=tk.DISABLED)
 

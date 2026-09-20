@@ -1,0 +1,29 @@
+{
+  "_note": "点击位置库模板。用法: 把下面带【示例】字样的点位改成你自己的坐标/控件后使用, 或直接删除它们从空库开始(程序支持空库, 在界面'点击位置编辑'里录制)。",
+  "_说明_坐标点": "坐标点格式 {x, y, button}: 坐标为【本机分辨率下的绝对像素】, 换机器/改分辨率需重录。button 取值 left / right / double。",
+  "_说明_控件点": "控件点格式 {type:'control', control_type, title, auto_id, button}: 按控件属性定位, 通常可跨机器沿用, 不受分辨率影响。其中 control_type='ListItem' 且 title 为纯数字时表示按列表行号点击第 N 行。",
+  "【示例】坐标点_左键": {
+    "x": 100,
+    "y": 200,
+    "button": "left"
+  },
+  "【示例】坐标点_右键": {
+    "x": 300,
+    "y": 400,
+    "button": "right"
+  },
+  "【示例】控件点_按列表行号": {
+    "type": "control",
+    "control_type": "ListItem",
+    "title": 1,
+    "auto_id": "",
+    "button": "left"
+  },
+  "【示例】控件点_按按钮属性": {
+    "type": "control",
+    "control_type": "Button",
+    "title": "Send Data",
+    "auto_id": "Tx_start",
+    "button": "left"
+  }
+}

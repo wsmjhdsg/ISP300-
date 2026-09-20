@@ -2,8 +2,6 @@ import threading
 import time
 from typing import Callable, Optional
 
-from pynput import mouse
-
 from core.constants import MouseButtons, RecorderConfig
 from core.logger import get_logger
 
@@ -12,7 +10,8 @@ logger = get_logger(__name__)
 
 class ClickRecorder:
     def __init__(self) -> None:
-        self.listener: Optional[mouse.Listener] = None
+        # pynput 在 start() 内延迟导入: 不进入录制时不加载, 加快冷启动
+        self.listener = None
         self.is_recording: bool = False
         self.callback: Optional[Callable[[dict], None]] = None
         self._last_left_click_time: float = 0
@@ -79,6 +78,8 @@ class ClickRecorder:
                 return False
 
             return True
+
+        from pynput import mouse  # 延迟导入(见 __init__ 注释)
 
         self.listener = mouse.Listener(on_click=on_click)
         self.listener.daemon = True

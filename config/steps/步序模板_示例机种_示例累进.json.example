@@ -1,0 +1,51 @@
+[
+  {
+    "type": "launch",
+    "path": "C:/path/to/your/ISP300Host.lnk",
+    "_note": "启动烧录软件。path 为【本机绝对路径】, 换机器务必重新核对(.lnk 或 .exe 均可)"
+  },
+  {
+    "type": "wait",
+    "seconds": 5.0,
+    "_note": "固定等待 N 秒, 用于等软件加载完成 / 等弹窗出现"
+  },
+  {
+    "type": "click",
+    "point_name": "示例按钮",
+    "button": "left",
+    "_note": "点击坐标点或控件点; point_name 对应 click_points.json 里的键名。button: left/right/double"
+  },
+  {
+    "type": "openfile",
+    "mode": "path",
+    "path": "C:/path/to/your/firmware.i3S",
+    "_note": "openfile 模式一'固定路径': 执行时自动把该路径填进'打开文件'对话框"
+  },
+  {
+    "type": "openfile",
+    "mode": "latest",
+    "dir": "C:/path/to/firmware/dir",
+    "pattern": "*.i3s",
+    "_note": "openfile 模式二'自动选最新': 取该目录下修改时间最新的匹配文件, 无需写死文件名"
+  },
+  {
+    "type": "openfile",
+    "mode": "pick",
+    "_note": "openfile 模式三'执行前手选': 执行到本步时弹窗由人工当次选择"
+  },
+  {
+    "type": "type",
+    "text": "STM32H743",
+    "_note": "向当前焦点输入文本(区分大小写: Hello ≠ hello)"
+  },
+  {
+    "type": "key",
+    "key": "enter",
+    "_note": "按下单个按键, 如 enter/tab/esc/space/f1~f12/up/down/left/right"
+  },
+  {
+    "type": "waitresult",
+    "timeout": 120.0,
+    "_note": "监控 ISP300 的 COMPLETE/Verify OK 弹窗: 出现即判定烧录成功并自动点'确定'; 超时则判定失败并中止后续步骤。建议紧跟 Send Data 后使用"
+  }
+]

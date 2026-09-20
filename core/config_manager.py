@@ -1,9 +1,23 @@
-import json
-import re
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+"""配置管理器: 机种/累进 CRUD、点击位置库、步序文件读写(带缓存)与旧格式迁移。
 
+设计要点:
+- 单例门面: UI 层统一经由 ConfigManager 访问配置, 避免各自拼路径。
+- 原子写盘: 先写 *.json.tmp 再 os.replace, 防止崩溃/断电损坏配置(历史教训:
+  直接 open(w) 写一半被杀会损坏整个 JSON, 下次启动静默回退默认值)。
+- 损坏自愈: 读取 JSON 失败时把坏文件改名留存(便于人工找回), 不覆盖、不静默丢数据。
+- 步序缓存感知外部编辑: 缓存携带文件 mtime, 用户手动改 JSON(README Q6)后
+  get_steps 自动重读, 不再出现"改了文件界面还是旧值"。
+"""
+import json
+import os
+import re
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from core.constants import ClickPointTypes
 from core.logger import get_logger
+from core.paths import app_base_dir
 
 logger = get_logger(__name__)
 
@@ -21,8 +35,11 @@ class ConfigManager:
     def reset_instance(cls) -> None:
         cls._instance = None
 
+    # ------------------------------------------------------------------ #
+    # 初始化与通用 JSON 读写
+    # ------------------------------------------------------------------ #
     def _initialize(self) -> None:
-        self._base_dir = Path(__file__).parent.parent.resolve()
+        self._base_dir = app_base_dir()
         self._config_dir = self._base_dir / "config"
         self._config_dir.mkdir(exist_ok=True)
 
@@ -31,27 +48,78 @@ class ConfigManager:
 
         self._machines_file = self._config_dir / "machines.json"
         self._click_points_file = self._config_dir / "click_points.json"
-        self._burner_file = self._config_dir / "burner.json"
 
         self.machines: Dict[str, List[str]] = self._load_json(
             self._machines_file, default={}
         )
+        if not isinstance(self.machines, dict):
+            self.machines = {}
         self._migrate_old_format()
 
         raw_click_points = self._load_json(self._click_points_file, default={})
-        self.click_points: Dict[str, dict] = {}
-        for name, data in raw_click_points.items():
-            if isinstance(data, dict):
-                self.click_points[name] = data
+        self.click_points: Dict[str, dict] = {
+            name: data
+            for name, data in raw_click_points.items()
+            if isinstance(data, dict)
+        }
 
-        raw_burner = self._load_json(self._burner_file, default={"path": ""})
-        self.burner: Dict[str, str] = (
-            raw_burner if isinstance(raw_burner, dict) else {"path": ""}
-        )
-
-        self._steps_cache: Dict[Tuple[str, str], List[dict]] = {}
+        # 步序缓存: key=(机种, 累进) -> (文件 mtime_ns, 步骤列表); mtime 变化即失效
+        self._steps_cache: Dict[Tuple[str, str], Tuple[Optional[int], List[dict]]] = {}
         logger.info("ConfigManager initialized")
 
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        return re.sub(r'[\\/:*?"<>|]', "_", name)
+
+    def _step_file_path(self, machine: str, rate: str) -> Path:
+        filename = f"{self._safe_name(machine)}_{self._safe_name(rate)}.json"
+        return self._steps_dir / filename
+
+    def _load_json(self, filepath: Path, default):
+        if not filepath.exists():
+            return default
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to load {filepath}: {e}")
+            # 坏文件改名留存, 避免下次启动反复告警, 也便于人工找回原始内容
+            try:
+                corrupt = filepath.with_suffix(
+                    filepath.suffix + f".corrupt-{time.time_ns()}"
+                )
+                filepath.rename(corrupt)
+                logger.warning(f"Corrupt file preserved as: {corrupt}")
+            except OSError as rename_err:
+                logger.error(f"Failed to preserve corrupt file: {rename_err}")
+            return default
+
+    @staticmethod
+    def _atomic_write(filepath: Path, data) -> None:
+        """原子写盘: 临时文件 + os.replace。崩溃/断电时要么旧文件完整, 要么新文件完整。"""
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        tmp = filepath.with_suffix(filepath.suffix + ".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, filepath)
+        except OSError:
+            try:  # 失败时清理残留临时文件, 避免掩盖后续问题
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    def _save_json(self, filepath: Path, data) -> None:
+        try:
+            self._atomic_write(filepath, data)
+        except OSError as e:
+            logger.error(f"Failed to save {filepath}: {e}")
+            raise
+
+    # ------------------------------------------------------------------ #
+    # 旧格式迁移 (步骤内嵌在机种值下的早期格式 -> 独立步序文件)
+    # ------------------------------------------------------------------ #
     def _migrate_old_format(self) -> None:
         changed = False
         for machine, value in list(self.machines.items()):
@@ -67,45 +135,12 @@ class ConfigManager:
             self._save_json(self._machines_file, self.machines)
             logger.info("Migrated old machine format")
 
-    @staticmethod
-    def _safe_name(name: str) -> str:
-        return re.sub(r'[\\/:*?"<>|]', "_", name)
-
-    def _step_file_path(self, machine: str, rate: str) -> Path:
-        filename = f"{self._safe_name(machine)}_{self._safe_name(rate)}.json"
-        return self._steps_dir / filename
-
-    def _load_json(self, filepath: Path, default):
-        if filepath.exists():
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning(f"Failed to load {filepath}: {e}")
-                return default
-        return default
-
-    def _save_json(self, filepath: Path, data) -> None:
-        try:
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except IOError as e:
-            logger.error(f"Failed to save {filepath}: {e}")
-            raise
-
     def _save_steps_to_disk(self, machine: str, rate: str, steps: List[dict]) -> None:
-        filepath = self._step_file_path(machine, rate)
-        self._save_json(filepath, steps)
+        self._save_json(self._step_file_path(machine, rate), steps)
 
-    def get_burner_path(self) -> str:
-        return self.burner.get("path", "")
-
-    def set_burner_path(self, path: str) -> None:
-        self.burner["path"] = path
-        self._save_json(self._burner_file, self.burner)
-        logger.info(f"Burner path updated: {path}")
-
+    # ------------------------------------------------------------------ #
+    # 机种 / 累进 CRUD (重命名/删除会联动步骤文件与缓存)
+    # ------------------------------------------------------------------ #
     def get_machine_names(self) -> List[str]:
         return list(self.machines.keys())
 
@@ -143,15 +178,8 @@ class ConfigManager:
 
     def delete_machine(self, name: str) -> bool:
         if name in self.machines:
-            rates = self.machines[name]
-            for rate in rates:
-                f = self._step_file_path(name, rate)
-                if f.exists():
-                    try:
-                        f.unlink()
-                    except OSError as e:
-                        logger.warning(f"Failed to delete step file {f}: {e}")
-                self._steps_cache.pop((name, rate), None)
+            for rate in self.machines[name]:
+                self._delete_step_file(name, rate)
             del self.machines[name]
             self._save_json(self._machines_file, self.machines)
             logger.info(f"Machine deleted: {name}")
@@ -171,13 +199,7 @@ class ConfigManager:
 
     def delete_rate(self, machine: str, rate: str) -> bool:
         if machine in self.machines and rate in self.machines[machine]:
-            f = self._step_file_path(machine, rate)
-            if f.exists():
-                try:
-                    f.unlink()
-                except OSError as e:
-                    logger.warning(f"Failed to delete step file {f}: {e}")
-            self._steps_cache.pop((machine, rate), None)
+            self._delete_step_file(machine, rate)
             self.machines[machine].remove(rate)
             self._save_json(self._machines_file, self.machines)
             logger.info(f"Rate deleted: {machine}/{rate}")
@@ -202,23 +224,48 @@ class ConfigManager:
                 return True
         return False
 
+    def _delete_step_file(self, machine: str, rate: str) -> None:
+        f = self._step_file_path(machine, rate)
+        if f.exists():
+            try:
+                f.unlink()
+            except OSError as e:
+                logger.warning(f"Failed to delete step file {f}: {e}")
+        self._steps_cache.pop((machine, rate), None)
+
+    # ------------------------------------------------------------------ #
+    # 步序文件: 读写 + mtime 感知缓存
+    # ------------------------------------------------------------------ #
+    def _step_mtime(self, filepath: Path) -> Optional[int]:
+        try:
+            return filepath.stat().st_mtime_ns
+        except OSError:
+            return None
+
     def get_steps(self, machine: str, rate: str) -> List[dict]:
         key = (machine, rate)
-        if key in self._steps_cache:
-            return list(self._steps_cache[key])
         filepath = self._step_file_path(machine, rate)
+        mtime = self._step_mtime(filepath)
+
+        cached = self._steps_cache.get(key)
+        if cached is not None and cached[0] == mtime:
+            return list(cached[1])
+
         steps: List[dict] = []
         if filepath.exists():
             data = self._load_json(filepath, default=[])
             if isinstance(data, list):
                 steps = data
-        self._steps_cache[key] = steps
+        self._steps_cache[key] = (mtime, steps)
         return list(steps)
 
     def set_steps(self, machine: str, rate: str, steps: List[dict]) -> bool:
         filepath = self._step_file_path(machine, rate)
         self._save_json(filepath, steps)
-        self._steps_cache[(machine, rate)] = list(steps)
+        self._steps_cache[(machine, rate)] = (
+            self._step_mtime(filepath),
+            list(steps),
+        )
         logger.info(f"Steps saved: {machine}/{rate} ({len(steps)} steps)")
         return True
 
@@ -228,21 +275,68 @@ class ConfigManager:
     def get_steps_file(self, machine: str, rate: str) -> str:
         return str(self._step_file_path(machine, rate))
 
+    # ------------------------------------------------------------------ #
+    # 点击位置库 (坐标点 + 控件点)
+    # ------------------------------------------------------------------ #
     def get_click_point_names(self) -> List[str]:
         return list(self.click_points.keys())
 
     def get_click_point(self, name: str) -> dict:
         return dict(self.click_points.get(name, {}))
 
+    def _save_click_points(self) -> None:
+        self._save_json(self._click_points_file, self.click_points)
+
     def add_click_point(self, name: str, x: int, y: int, button: str = "left") -> None:
         self.click_points[name] = {"x": int(x), "y": int(y), "button": button}
-        self._save_json(self._click_points_file, self.click_points)
+        self._save_click_points()
         logger.info(f"Click point added: {name} ({x}, {y}) {button}")
+
+    def add_control_point(
+        self,
+        name: str,
+        control_type: str,
+        title: str,
+        auto_id: str,
+        button: str = "left",
+    ) -> None:
+        self.click_points[name] = {
+            "type": ClickPointTypes.CONTROL,
+            "control_type": control_type or "",
+            "title": title or "",
+            "auto_id": auto_id or "",
+            "button": button,
+        }
+        self._save_click_points()
+        logger.info(f"Control point added: {name} ({control_type} {title} {auto_id})")
+
+    def update_control_point(
+        self,
+        name: str,
+        control_type: str,
+        title: str,
+        auto_id: str,
+        button: str = "left",
+    ) -> bool:
+        if name in self.click_points:
+            self.click_points[name] = {
+                "type": ClickPointTypes.CONTROL,
+                "control_type": control_type or "",
+                "title": title or "",
+                "auto_id": auto_id or "",
+                "button": button,
+            }
+            self._save_click_points()
+            logger.info(
+                f"Control point updated: {name} ({control_type} {title} {auto_id})"
+            )
+            return True
+        return False
 
     def delete_click_point(self, name: str) -> bool:
         if name in self.click_points:
             del self.click_points[name]
-            self._save_json(self._click_points_file, self.click_points)
+            self._save_click_points()
             logger.info(f"Click point deleted: {name}")
             return True
         return False
@@ -252,7 +346,7 @@ class ConfigManager:
     ) -> bool:
         if name in self.click_points:
             self.click_points[name] = {"x": int(x), "y": int(y), "button": button}
-            self._save_json(self._click_points_file, self.click_points)
+            self._save_click_points()
             logger.info(f"Click point updated: {name} ({x}, {y}) {button}")
             return True
         return False

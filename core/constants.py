@@ -11,10 +11,17 @@ class MouseButtons:
 class StepTypes:
     LAUNCH: Final[str] = "launch"
     CLICK: Final[str] = "click"
+    OPENFILE: Final[str] = "openfile"  # 自动填充系统"打开文件"对话框(选固件等)
     TYPE: Final[str] = "type"
     KEY: Final[str] = "key"
     WAIT: Final[str] = "wait"
-    ALL: Final[tuple] = (LAUNCH, CLICK, TYPE, KEY, WAIT)
+    WAITRESULT: Final[str] = "waitresult"  # 轮询烧录完成弹窗(COMPLETE/Verify OK)判成败
+    ALL: Final[tuple] = (LAUNCH, CLICK, OPENFILE, TYPE, KEY, WAIT, WAITRESULT)
+
+
+class ClickPointTypes:
+    # 控件定位(control_type / title / automation_id); 坐标定位点不带 type 字段
+    CONTROL: Final[str] = "control"
 
 
 BUTTON_LABELS: Final[Dict[str, str]] = {
@@ -37,39 +44,109 @@ BUTTON_DISPLAY_VALUES: Final[Dict[str, str]] = {
 
 BUTTON_FROM_DISPLAY: Final[Dict[str, str]] = {v: k for k, v in BUTTON_DISPLAY_VALUES.items()}
 
+# 步骤类型: 中文短名(列表列用) + 描述(下拉框提示用), 显式映射取代
+# "从显示文本 split 反推 type key" 的脆弱写法(见 step_editor 旧 get_type_key)。
+# openfile 步骤的取值模式
+class OpenFileModes:
+    PATH: Final[str] = "path"      # 固定路径
+    LATEST: Final[str] = "latest"  # 从目录取修改时间最新的匹配文件
+    PICK: Final[str] = "pick"      # 执行前弹出文件选择器手选一次
+    ALL: Final[tuple] = (PATH, LATEST, PICK)
+
+
+STEP_SHORT_LABELS: Final[Dict[str, str]] = {
+    StepTypes.LAUNCH: "打开软件",
+    StepTypes.CLICK: "点击",
+    StepTypes.OPENFILE: "选择文件",
+    StepTypes.TYPE: "输入文本",
+    StepTypes.KEY: "按键",
+    StepTypes.WAIT: "等待",
+    StepTypes.WAITRESULT: "烧录判定",
+}
+
+STEP_DESCRIPTIONS: Final[Dict[str, str]] = {
+    StepTypes.LAUNCH: "启动外部程序(.exe / .lnk)",
+    StepTypes.CLICK: "调用已记录的坐标点 / 控件点, 或直接填坐标",
+    StepTypes.OPENFILE: "自动填充弹出的'打开文件'对话框(选固件等)",
+    StepTypes.TYPE: "在当前光标处逐字符模拟输入, 区分大小写",
+    StepTypes.KEY: "按下单个按键 (Enter/Tab/Esc/F1~F12...)",
+    StepTypes.WAIT: "暂停指定秒数, 用于等待软件加载/弹窗",
+    StepTypes.WAITRESULT: "轮询'烧录完成'弹窗(COMPLETE / Verify OK), 自动关闭并判定成功",
+}
+
+STEP_DISPLAY_VALUES: Final[Dict[str, str]] = {
+    StepTypes.LAUNCH: f"{StepTypes.LAUNCH} {STEP_SHORT_LABELS[StepTypes.LAUNCH]} - {STEP_DESCRIPTIONS[StepTypes.LAUNCH]}",
+    StepTypes.CLICK: f"{StepTypes.CLICK} {STEP_SHORT_LABELS[StepTypes.CLICK]} - {STEP_DESCRIPTIONS[StepTypes.CLICK]}",
+    StepTypes.OPENFILE: f"{StepTypes.OPENFILE} {STEP_SHORT_LABELS[StepTypes.OPENFILE]} - {STEP_DESCRIPTIONS[StepTypes.OPENFILE]}",
+    StepTypes.TYPE: f"{StepTypes.TYPE} {STEP_SHORT_LABELS[StepTypes.TYPE]} - {STEP_DESCRIPTIONS[StepTypes.TYPE]}",
+    StepTypes.KEY: f"{StepTypes.KEY} {STEP_SHORT_LABELS[StepTypes.KEY]} - {STEP_DESCRIPTIONS[StepTypes.KEY]}",
+    StepTypes.WAIT: f"{StepTypes.WAIT} {STEP_SHORT_LABELS[StepTypes.WAIT]} - {STEP_DESCRIPTIONS[StepTypes.WAIT]}",
+    StepTypes.WAITRESULT: f"{StepTypes.WAITRESULT} {STEP_SHORT_LABELS[StepTypes.WAITRESULT]} - {STEP_DESCRIPTIONS[StepTypes.WAITRESULT]}",
+}
+
+STEP_KEY_FROM_DISPLAY: Final[Dict[str, str]] = {v: k for k, v in STEP_DISPLAY_VALUES.items()}
+
 
 class UISettings:
-    WINDOW_SIZE: Final[str] = "720x680"
-    WINDOW_MINSIZE: Final[tuple] = (680, 600)
+    """浅色工业风 UI 常量: 铝灰底 + 深钢灰栏 + 信号橙强调, 全 hex 收敛于此。"""
+
+    # 图标(相对项目根 / PyInstaller _MEIPASS 的资源路径)
+    APP_ICON: Final[str] = "assets/icon.ico"
+
+    WINDOW_SIZE: Final[str] = "780x720"
+    WINDOW_MINSIZE: Final[tuple] = (700, 620)
     CLICK_POINT_EDITOR_SIZE: Final[str] = "600x480"
     STEP_EDITOR_SIZE: Final[str] = "1050x650"
     MACHINE_EDITOR_SIZE: Final[str] = "920x450"
 
-    FONT_FAMILY: Final[str] = "Microsoft YaHei UI"
+    # 工业风字体: 正文 Segoe UI(清爽), 标题 Bahnschrift(工程感 DIN 风), 日志等宽 Consolas
+    FONT_FAMILY: Final[str] = "Segoe UI"
+    FONT_TITLE: Final[str] = "Bahnschrift"
     FONT_MONO: Final[str] = "Consolas"
 
     COLORS: Final[Dict[str, str]] = {
-        "bg_topbar": "#f5f5f5",
-        "primary": "#4CAF50",
-        "primary_hover": "#45a049",
-        "warning": "#f39c12",
-        "danger": "#e74c3c",
-        "success": "#27ae60",
-        "text": "#333333",
-        "text_gray": "#666666",
-        "border": "#ddd",
+        # —— 浅色工业风: 浅铝灰底 + 深钢灰顶栏 + 白卡片 + 信号橙主操作 + 工控红停止 ——
+        "bg_topbar": "#3A4653",        # 顶部深钢灰蓝(铭牌栏)
+        "bg_window": "#E7EAED",        # 窗口浅铝灰底
+        "bg_panel": "#F0F3F5",         # 面板/表头浅底
+        "bg_card": "#FFFFFF",          # 内容白色卡片
+        "bg_hover": "#D9DFE4",         # 悬停/进度条槽底色
+        "accent": "#E8590C",           # 信号橙(开始执行/强调)
+        "accent_hover": "#D9480F",     # 强调悬停
+        "accent_soft": "#DCE8F1",      # 表格选中行(工业蓝浅底)
+        "text": "#1F2933",             # 主文字(近黑)
+        "text_secondary": "#5E6C76",   # 次要文字(钢灰)
+        "text_on_dark": "#F8FAFC",     # 深钢灰栏上的文字
+        "text_on_accent": "#FFFFFF",   # 橙按钮上的文字
+        "border": "#8A97A3",           # 控件边框(钢灰)
+        "border_light": "#CBD3DA",     # 分组框/分隔浅边框
+        "success": "#2B8A3E",          # 成功(工控绿)
+        "warning": "#C77414",          # 警示(琥珀)
+        "danger": "#C92A2A",           # 危险/停止(工控红)
+        "info": "#1C6BA0",             # 信息(工业蓝)
+        # —— 工业指示灯 ——
+        "led_idle": "#9AA5B1",         # 空闲: 灰
+        "led_running": "#E8930C",      # 执行中: 琥珀
+        "led_success": "#2B8A3E",      # 完成: 绿
+        "led_error": "#C92A2A",        # 失败: 红
     }
 
 
 class SimulatorConfig:
     MOVE_DURATION: Final[float] = 0.2
     MOVE_PAUSE: Final[float] = 0.2
-    # 鼠标移动容差(像素): 生产线有震动时鼠标会轻微抖动, 默认 5 像素过小易误中断。
-    # 若仍误触发可继续调大(如 20); 若希望更灵敏可调小。
-    MOUSE_TOLERANCE: Final[int] = 15
-    MOUSE_CHECK_INTERVAL: Final[float] = 0.1
     TYPE_INTERVAL: Final[float] = 0.05
     IME_SWITCH_DELAY: Final[float] = 0.2
+    # 超过该长度的 type 文本改用"剪贴板 + Ctrl+V", 输入提速且规避逐键转义问题
+    TYPE_PASTE_THRESHOLD: Final[int] = 40
+    # openfile 步骤: 等待"打开文件"对话框出现的总超时与轮询间隔
+    FILE_DIALOG_TIMEOUT: Final[float] = 10.0
+    FILE_DIALOG_POLL: Final[float] = 0.2
+    # waitresult 步骤: 轮询"烧录完成"弹窗(COMPLETE/Verify OK)的总超时与轮询间隔
+    RESULT_TIMEOUT: Final[float] = 120.0
+    RESULT_POLL: Final[float] = 0.5
+    # 步骤失败后的默认策略: 失败即中止后续执行(防烧错; UI 可关)
+    STOP_ON_ERROR: Final[bool] = True
 
 
 class RecorderConfig:
