@@ -125,6 +125,33 @@ def apply_ttk_theme(root: tk.Tk) -> None:
         foreground=[("disabled", c["text_secondary"])],
     )
 
+    # 只读路径选择框(Path.TEntry): 用于「文件路径 / 固件目录 / 软件路径」等
+    # 只允许弹窗选择、不允许手输的字段。readonly 态需显式映射, 否则会落到
+    # Tk 默认的灰底灰字, 在浅色工业风下对比度不达标(见 §6.2 打磨底线)。
+    # 视觉上刻意做成"可点击的输入框": 白底 + 正常字色 + 手型光标。
+    style.configure(
+        "Path.TEntry",
+        fieldbackground=c["bg_card"],
+        foreground=c["text"],
+        bordercolor=c["border"],
+        borderwidth=1,
+        padding=UISettings.ENTRY_PAD,
+    )
+    style.map(
+        "Path.TEntry",
+        bordercolor=[("focus", c["accent"]), ("active", c["accent"])],
+        fieldbackground=[
+            ("readonly", c["bg_card"]),
+            ("focus", c["bg_card"]),
+            ("active", c["bg_card"]),
+            ("disabled", c["bg_panel"]),
+        ],
+        foreground=[
+            ("readonly", c["text"]),
+            ("disabled", c["text_secondary"]),
+        ],
+    )
+
     style.configure(
         "TCombobox",
         fieldbackground=c["bg_card"],

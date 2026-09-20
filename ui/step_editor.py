@@ -1,3 +1,4 @@
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from typing import Dict, List, Optional
@@ -27,6 +28,23 @@ from ui.styles import (
 )
 
 logger = get_logger(__name__)
+
+# 只读路径选择框在空值时显示的占位提示(仅用于显示, 取值时会被剔除)。
+# 集中为常量, 避免各处手写不一致导致占位文字被当成真实路径写进步序。
+PATH_PLACEHOLDER = "点击此处选择..."
+
+# 所有出现过的占位文案(launch 与 openfile 两处表单共用同一套判定)
+_PLACEHOLDER_TEXTS = {PATH_PLACEHOLDER}
+
+
+def clean_path(text: str) -> str:
+    """把只读路径框的原始文本规整为真实路径。
+
+    空值占位提示不算用户选择, 一律归一为空字符串, 避免占位文字被当成
+    路径写进步序(会导致执行时"路径不存在"的误报)。
+    """
+    value = (text or "").strip()
+    return "" if value in _PLACEHOLDER_TEXTS else value
 
 # 步序列表 LabelFrame 的框架开销(实测): 含边框、标题行、内部 padding 与
 # 表格自身的 padx/pady。与表格行数无关, 因此可作为常量参与高度分配计算。
@@ -605,25 +623,41 @@ class StepEditorDialog(tk.Toplevel):
 
         row_path = ttk.Frame(parent)
         row_path.grid(row=1, column=0, columnspan=3, sticky=tk.EW, pady=5)
-        ttk.Entry(row_path, textvariable=path_var, width=40).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5)
-        )
 
         def browse():
             p = filedialog.askopenfilename(
                 title="选择要打开的软件",
                 filetypes=[("可执行文件 / 快捷方式", "*.exe;*.lnk"), ("所有文件", "*.*")],
+                initialdir=os.path.dirname(clean_path(path_var.get())) or None,
                 parent=self,
             )
             if p:
                 path_var.set(p)
 
-        ttk.Button(row_path, text="浏览...", command=browse).pack(side=tk.LEFT)
+        # 只读 + 点击弹窗: 路径不允许手输, 避免手打错路径到执行时才失败。
+        # 布局位次: 按钮先 pack(side=RIGHT) 固定占位(侧向布局先 pack 者先分配空间),
+        # 输入框再 pack(side=LEFT, expand=True) 只吃剩余空间; 反过来会把按钮压扁至不可见。
+        ttk.Button(row_path, text="浏览...", command=browse).pack(
+            side=tk.RIGHT, padx=(5, 0)
+        )
+
+        # 空值占位: 仅用于显示, 取值时 clean_path 会剔除
+        if not clean_path(path_var.get()):
+            path_var.set(PATH_PLACEHOLDER)
+
+        launch_entry = ttk.Entry(
+            row_path, textvariable=path_var, width=20,
+            state="readonly", cursor="hand2", style="Path.TEntry",
+        )
+        launch_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        launch_entry.bind("<Button-1>", lambda _e: browse())
+        launch_entry.bind("<Return>", lambda _e: browse())
+        launch_entry.bind("<space>", lambda _e: browse())
 
         def test_launch():
-            p = path_var.get().strip()
+            p = clean_path(path_var.get())
             if not p:
-                messagebox.showinfo("提示", "请先填写路径", parent=self)
+                messagebox.showinfo("提示", "请先点「浏览...」选择软件", parent=self)
                 return
             ok = Simulator.launch_program(p)
             messagebox.showinfo("测试结果", "启动成功!" if ok else "启动失败, 请检查路径", parent=self)
@@ -631,9 +665,11 @@ class StepEditorDialog(tk.Toplevel):
         ttk.Button(parent, text="测试启动", command=test_launch).grid(row=2, column=0, sticky=tk.W, pady=5)
 
         def pack_step():
-            p = path_var.get().strip()
+            p = clean_path(path_var.get())
             if not p:
-                messagebox.showerror("错误", "请填写软件路径", parent=parent.winfo_toplevel())
+                messagebox.showerror(
+                    "错误", "请点「浏览...」选择软件", parent=parent.winfo_toplevel()
+                )
                 return None
             return {"type": StepTypes.LAUNCH, "path": p}
 
@@ -655,9 +691,12 @@ class StepEditorDialog(tk.Toplevel):
         }
         display_to_mode = {v: k for k, v in mode_display.items()}
 
+        # 标题只保留短标签, 长说明交给下方 hint。
+        # 原因: grid 的列最小宽度由控件 reqwidth 决定, 超长单行标题会把
+        # 整个表单的最小宽度撑到 456px+, 小窗口下直接导致水平溢出/被裁。
         ttk.Label(
             parent,
-            text="文件来源: (执行时自动填充弹出的'打开文件'对话框)",
+            text="文件来源",
             font=(UISettings.FONT_FAMILY, 10, "bold"),
             foreground=UISettings.COLORS["info"],
         ).grid(row=0, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
@@ -681,17 +720,68 @@ class StepEditorDialog(tk.Toplevel):
         body.grid(row=2, column=0, columnspan=3, sticky=tk.NSEW, pady=2)
         fields: Dict[str, tk.StringVar] = {}
 
+        def _clean_path(var: Optional[tk.StringVar]) -> str:
+            """取路径值, 剔除空值占位提示(见 clean_path)。"""
+            return clean_path(str(var.get())) if var is not None else ""
+
         def rebuild(*_args):
             for w in body.winfo_children():
                 w.destroy()
             fields.clear()
             mode = current_mode()
 
-            def add_row(frame_text: Optional[str] = None):
+            def add_row(frame_text: Optional[str] = None) -> ttk.Frame:
+                """构造一行的容器框架, 可选左侧标签(按 10 字符宽对齐, 使各行输入框左缘齐平)。"""
                 row = ttk.Frame(body)
                 row.pack(fill=tk.X, pady=3)
                 if frame_text:
                     ttk.Label(row, text=frame_text, width=10).pack(side=tk.LEFT)
+                return row
+
+            def add_entry_row(frame_text: str, var, btn_text: str, btn_cmd,
+                              placeholder: str = PATH_PLACEHOLDER) -> ttk.Frame:
+                """标签 + 只读路径框 + 右侧固定「浏览...」按钮。
+
+                路径类字段统一为「只读 + 点击弹窗」: 输入框 state=readonly、
+                禁止手输(避免手打错路径到执行时才失败), 点击输入框本身或右侧
+                按钮都直接弹出选择窗口, 选完回填。
+
+                空值时显示灰色占位提示(仅用于显示, 取值时由 _clean_path 过滤掉),
+                否则用户看不出这个框可以点。
+
+                布局位次很关键: 按钮必须**先** pack(side=RIGHT)。侧向布局(pack)
+                按调用顺序分配空间, 先 pack 者先获得自身自然宽度; 后 pack 的
+                expand 输入框只能吃剩下的。若反过来(输入框先 pack expand),
+                窗口变窄时 pack 会优先满足 expand 的输入框, 把按钮一路压扁直至
+                不可见(实测 460px 最小宽度下按钮仅剩 85px / 需求 111px, 文字被裁)。
+                """
+                row = add_row(frame_text)
+
+                def _select(*_e):
+                    btn_cmd()
+
+                # 先 pack 按钮(side=RIGHT), 保证它永远拿到完整的自然宽度
+                ttk.Button(row, text=btn_text, command=btn_cmd).pack(
+                    side=tk.RIGHT, padx=(5, 0)
+                )
+
+                entry = ttk.Entry(
+                    row,
+                    textvariable=var,
+                    width=20,
+                    state="readonly",
+                    cursor="hand2",
+                    style="Path.TEntry",
+                )
+                entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                # 点击输入框即弹窗, 不必去找按钮
+                entry.bind("<Button-1>", _select)
+                entry.bind("<Return>", _select)
+                entry.bind("<space>", _select)
+
+                # 空值占位: 仅用于显示, 取值时 clean_path 会剔除
+                if not str(var.get()).strip():
+                    var.set(placeholder)
                 return row
 
             def add_hint(text: str, color: str = "text_secondary"):
@@ -699,23 +789,21 @@ class StepEditorDialog(tk.Toplevel):
                     body,
                     text=text,
                     foreground=UISettings.COLORS.get(color, UISettings.COLORS["text_secondary"]),
-                    wraplength=380,
+                    # 初始换行宽度取小值, 避免先撑大表单最小宽度。
+                    wraplength=220,
                     justify=tk.LEFT,
                 )
                 lbl.pack(fill=tk.X, anchor=tk.W, pady=(0, 2))
-                # 提示文字换行宽度跟随容器实际宽度, 避免长句被截断或撑出横向滚动条
-                body.bind(
-                    "<Configure>",
-                    lambda e, lb=lbl: lb.configure(wraplength=max(180, e.width - 20)),
-                    add="+",
-                )
+
+                def _rewrap(e, lb=lbl):
+                    # 跟随容器实际宽度换行, 但设上限: 超宽时宁可早换行,
+                    # 也不让说明文字反向决定表单的最小宽度(否则小窗口下溢出)。
+                    lb.configure(wraplength=max(180, min(480, e.width - 20)))
+
+                body.bind("<Configure>", _rewrap, add="+")
 
             if mode == OpenFileModes.PATH:
                 fields["path_var"] = tk.StringVar(value=str(existing.get("path", "")))
-                row = add_row("文件路径:")
-                ttk.Entry(row, textvariable=fields["path_var"], width=36).pack(
-                    side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5)
-                )
 
                 def browse():
                     p = filedialog.askopenfilename(
@@ -726,35 +814,43 @@ class StepEditorDialog(tk.Toplevel):
                     if p:
                         fields["path_var"].set(p)
 
-                ttk.Button(row, text="浏览...", command=browse).pack(side=tk.LEFT)
-                add_hint("执行时校验文件存在; 若不存在该步骤将直接失败(不会干等对话框)。")
+                add_entry_row("文件路径:", fields["path_var"], "浏览...", browse)
+                add_hint(
+                    "执行时自动填充弹出的'打开文件'对话框; 执行时会校验文件存在, "
+                    "若不存在该步骤将直接失败(不会干等对话框)。"
+                )
 
             elif mode == OpenFileModes.LATEST:
                 fields["dir_var"] = tk.StringVar(value=str(existing.get("dir", "")))
                 fields["pattern_var"] = tk.StringVar(
                     value=str(existing.get("pattern") or "*.i3s")
                 )
-                row = add_row("固件目录:")
-                ttk.Entry(row, textvariable=fields["dir_var"], width=36).pack(
-                    side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5)
-                )
 
                 def browse_dir():
-                    d = filedialog.askdirectory(title="选择固件所在目录", parent=self)
+                    cur = _clean_path(fields.get("dir_var"))
+                    d = filedialog.askdirectory(
+                        title="选择固件所在目录",
+                        initialdir=cur if cur and os.path.isdir(cur) else None,
+                        parent=self,
+                    )
                     if d:
                         fields["dir_var"].set(d)
 
-                ttk.Button(row, text="浏览...", command=browse_dir).pack(side=tk.LEFT)
+                add_entry_row("固件目录:", fields["dir_var"], "浏览...", browse_dir)
 
                 row2 = add_row("文件名模式:")
                 ttk.Entry(row2, textvariable=fields["pattern_var"], width=20).pack(
                     side=tk.LEFT
                 )
-                add_hint("执行时自动选取该目录下【修改时间最新】的匹配文件(默认 *.i3s, 不含子目录)。")
+                add_hint(
+                    "执行时自动填充弹出的'打开文件'对话框, 选取该目录下"
+                    "【修改时间最新】的匹配文件(默认 *.i3s, 不含子目录)。"
+                )
 
             else:  # PICK
                 add_hint(
-                    "执行到本步前会弹出文件选择窗口, 由你当次选择(选择结果只影响当次执行)。",
+                    "执行到本步前会弹出文件选择窗口, 由你当次选择"
+                    "(选择结果只影响当次执行, 不写死到步序)。",
                     color="warning",
                 )
 
@@ -765,18 +861,18 @@ class StepEditorDialog(tk.Toplevel):
             mode = current_mode()
             step = {"type": StepTypes.OPENFILE, "mode": mode}
             if mode == OpenFileModes.PATH:
-                path = fields.get("path_var").get().strip()
+                path = _clean_path(fields.get("path_var"))
                 if not path:
                     messagebox.showerror(
-                        "错误", "请填写固件文件路径", parent=parent.winfo_toplevel()
+                        "错误", "请点「浏览...」选择固件文件", parent=parent.winfo_toplevel()
                     )
                     return None
                 step["path"] = path
             elif mode == OpenFileModes.LATEST:
-                directory = fields.get("dir_var").get().strip()
+                directory = _clean_path(fields.get("dir_var"))
                 if not directory:
                     messagebox.showerror(
-                        "错误", "请填写固件目录", parent=parent.winfo_toplevel()
+                        "错误", "请点「浏览...」选择固件目录", parent=parent.winfo_toplevel()
                     )
                     return None
                 step["dir"] = directory
