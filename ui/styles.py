@@ -365,11 +365,17 @@ class ButtonFlow(ttk.Frame):
     问题背景: 工具条用 pack(side=LEFT) 平铺时, 窗口变窄按钮会被裁掉(文字截断)。
     本容器按容器实际宽度动态计算每行可放按钮数, 窄则换行、宽则单行。
 
-    实现要点(Tk 陷阱): 若把所有按钮都 grid 到同一个网格里, grid 的每一列宽度
-    取【该列全部行】的最大请求宽度——第 2 行放到第 1 列的按钮会把第 1 列整体
-    撑宽, 导致"每行都算过没超, 合起来却溢出"的假性换行失败。
-    因此这里改为"每行一个子 Frame + 内部 pack(side=LEFT)":
-    行与行之间互不影响, 只要单行累计宽度 <= 容器宽度就一定不横向溢出。
+    实现要点(Tk 陷阱, 全部为实测踩坑):
+    1. 若把所有按钮 grid 到同一个网格, grid 的每一列宽度取【该列全部行】的最大
+       请求宽度 —— 第 2 行放到第 1 列的按钮会把第 1 列整体撑宽, 造成"每行单独算
+       都没超, 合起来却溢出"。故改为"每行一个子 Frame + 内部 pack(side=LEFT)"。
+    2. 行 Frame 的 grid sticky 必须带 N(北)。只给 W 时行 Frame 会在网格单元内
+       垂直居中, 容器被拉高后上方出现一片空白。
+    3. 按钮的 master 必须就是它所在的行 Frame。ttk 的 pack(in_=...) 只能把控件
+       放进其祖先链上的容器, 而按钮若建在 ButtonFlow 下、行 Frame 是它的兄弟,
+       pack(in_=frame) 不会生效(按钮会神秘消失)。因此重排时按需重建按钮,
+       直接以行 Frame 作为 parent。
+    4. 容器宽度在首次映射前恒为 1, 必须多级回退取宽度, 否则重排会永久提前退出。
 
     用法:
         flow = ButtonFlow(parent)
@@ -381,121 +387,221 @@ class ButtonFlow(ttk.Frame):
     def __init__(self, master, gap: int = UISettings.PAD_XS, **kwargs):
         super().__init__(master, **kwargs)
         self._gap = gap
-        self._items: list = []          # [(widget, width_chars)]
-        self._rows: list = []           # 当前使用的行 Frame 列表
+        # [(text, command, width, style)] 只存"规格", 按钮实例按需重建
+        self._specs: list = []
+        self._buttons: list = []
+        self._rows: list = []           # 当前行 Frame 列表
         self._last_sig = None           # 上次布局签名, 用于跳过无变化的重复重排
-        self.bind("<Configure>", self._reflow)
+        self._pending = False
+        self.bind("<Configure>", self._on_configure)
+
+    # ---------- 对外接口 ----------
 
     def add(self, text: str, command, width: int = UISettings.BTN_WIDTH_MD,
-            style: str = "TButton") -> ttk.Button:
-        btn = ttk.Button(self, text=text, command=command, width=width, style=style)
-        self._items.append((btn, width))
-        self._last_sig = None        # 强制下次重排
-        self._reflow()
-        # 首帧字体尚未测量时 reqwidth 偏小, 字体就绪后再排一次
+            style: str = "TButton"):
+        """添加一个按钮。重排后按钮实例会被重建, 请通过 flow.buttons 取最新实例。"""
+        self._specs.append((text, command, width, style))
+        self._last_sig = None
+        self._schedule_reflow()
+        return self._buttons[-1] if self._buttons else None
+
+    @property
+    def buttons(self) -> list:
+        """当前实际存在的按钮实例(按添加顺序)。"""
+        return list(self._buttons)
+
+    # ---------- 内部实现 ----------
+
+    def _schedule_reflow(self):
+        """合并多次 add 的重排请求, 避免批量添加时反复重建造成闪烁。"""
+        if self._pending:
+            return
+        self._pending = True
         try:
-            self.after_idle(lambda: self._reflow(force=True))
+            self.after_idle(self._reflow_now)
+        except Exception:
+            self._pending = False
+        # 字体测量完成后再兜底排一次(首帧估算可能偏小)
+        try:
+            self.after(90, self._reflow_force)
         except Exception:
             pass
-        return btn
+
+    def _reflow_now(self):
+        self._pending = False
+        self._reflow(force=True)
+
+    def _reflow_force(self):
+        self._reflow(force=True)
+
+    def _on_configure(self, event=None):
+        self._reflow(event)
 
     def _pad_x(self) -> int:
-        """读取自身左右内边距(ttk 可能返回元组或字符串, 两种都要兼容)。"""
+        """读取自身左右内边距之和(用于从容器宽度扣掉, 得到真正可用的排布宽度)。
+
+        ttk 的 padding 语义: (水平, 垂直) —— 水平值会同时作用于左右两侧。
+        因此左右总量 = 水平值 * 2。ttk 可能把 padding 归一为字符串或含 4 个
+        分量的元组, 这里统一按 Tcl 列表逐个解析。
+        """
         try:
             pad = self.cget("padding")
         except Exception:
             return 0
+        nums = []
         try:
             if isinstance(pad, (tuple, list)):
-                if len(pad) == 1:
-                    return int(pad[0]) * 2
-                return int(pad[1]) * 2
-            parts = str(pad).split()
-            if len(parts) == 1:
-                return int(parts[0]) * 2
-            return int(parts[1]) * 2
+                for v in pad:
+                    nums.append(int(v))
+            else:
+                for part in str(pad).split():
+                    nums.append(int(part))
         except Exception:
             return 0
+        if not nums:
+            return 0
+        if len(nums) == 1:
+            return nums[0] * 2          # 单值: 四周同值
+        if len(nums) == 2:
+            return nums[0] * 2          # (水平, 垂直)
+        if len(nums) == 4:
+            return nums[0] + nums[2]    # (左, 上, 右, 下)
+        return nums[0] * 2
 
-    def _btn_px(self, btn, fallback_chars: int) -> int:
-        """按钮占位宽度: 优先用 Tk 实测 reqwidth, 不可用时按字符宽估算。
+    def _avail_width(self, event=None) -> int:
+        """取得可用于排布按钮的宽度(映射前 winfo_width 恒为 1, 需多级回退)。"""
+        if event is not None:
+            try:
+                if event.width > 1:
+                    return int(event.width)
+            except Exception:
+                pass
+        try:
+            w = self.winfo_width()
+            if w > 1:
+                return int(w)
+        except Exception:
+            pass
+        try:
+            mw = self.master.winfo_width()
+            if mw > 1:
+                return int(mw)
+        except Exception:
+            pass
+        try:
+            mw = self.winfo_toplevel().winfo_width()
+            if mw > 1:
+                return int(mw)
+        except Exception:
+            pass
+        try:
+            return int(self.winfo_screenwidth() * 0.8)
+        except Exception:
+            return 800
 
-        重要: 这里绝不能用 winfo_width()——按钮被 pack 后可能因父容器
-        宽度不足而被压缩, 用它做换行判断会陷入"越挤越窄、越窄越不换行"的
-        死循环, 直接导致横向溢出。
+    def _btn_px(self, text: str, chars: int, style: str) -> int:
+        """估算按钮像素宽(用于换行判断)。
+
+        重要: 绝不能用按钮的 winfo_width() —— 被 pack 后可能因父容器宽度不足
+        而被压缩, 用它做换行判断会陷入"越挤越窄、越窄越不换行"的死循环。
+        也不依赖 winfo_reqwidth(): 按钮重排时会被重建, 重建瞬间尺寸为 0。
+
+        公式为实测校准(本主题 + 默认字体):
+            width=12 -> 118px, width=10 -> 104px, width=18 -> 160px
+        即 ttk 的 width 单位约合 7px/字符, 加上固定内边距约 34px。
+        长文案按文字实际字数再取一次较大值, 保证不会被低估。
         """
-        try:
-            # 未映射的按钮 reqwidth 已是准确值; 已映射的同样可用
-            req = btn.winfo_reqwidth()
-        except Exception:
-            req = 0
-        if req > 1:
-            return req
-        # 回退: 字符数 * 近似字宽 + 左右内边距
-        return fallback_chars * 8 + UISettings.BTN_PAD_X * 2 + 8
+        px = chars * 7 + 34
+        est = len(str(text)) * 8 + 30
+        return max(px, est)
 
-    def _reflow(self, event=None, force: bool = False):
-        try:
-            avail = (event.width if event is not None else self.winfo_width())
-        except Exception:
-            return
-        if avail <= 1 or not self._items:
-            return
-
-        usable = max(1, avail - self._pad_x())
-
-        # 逐行累积: 每行能塞几个塞几个。用 reqwidth 而非 winfo_width,
-        # 保证"不因压缩而误判", 任何窄宽度下都必然折行而不溢出。
-        rows: list = []              # [[btn, ...], ...]
+    def _compute_rows(self, usable: int) -> list:
+        """把按钮规格按可用宽度分行, 返回 [[spec_index, ...], ...]。"""
+        rows: list = []
         current: list = []
         used = 0
-        for btn, chars in self._items:
-            px = self._btn_px(btn, chars)
+        for idx, (text, _cmd, width, style) in enumerate(self._specs):
+            px = self._btn_px(text, width, style)
             need = px + (self._gap if current else 0)
             if current and used + need > usable:
                 rows.append(current)
                 current = []
                 used = 0
                 need = px
-            current.append(btn)
+            current.append(idx)
             used += need
         if current:
             rows.append(current)
+        return rows
 
-        signature = tuple(tuple(str(b) for b in row) for row in rows)
+    def _reflow(self, event=None, force: bool = False):
+        if not self._specs:
+            return
+        avail = self._avail_width(event)
+        if avail <= 1:
+            return
+        usable = max(1, avail - self._pad_x())
+        rows = self._compute_rows(usable)
+
+        signature = tuple(tuple(r) for r in rows)
         if (
             not force
-            and signature == getattr(self, "_last_sig", None)
+            and signature == self._last_sig
             and len(self._rows) == len(rows)
+            and self._layout_ok(rows)
         ):
             return
         self._last_sig = signature
 
-        # 行数变化才重建行 Frame; 否则复用(避免闪烁)
-        if len(rows) != len(self._rows):
-            for f in self._rows:
-                f.destroy()
-            self._rows = []
-            for i in range(len(rows)):
-                f = ttk.Frame(self)
-                f.grid(row=i, column=0, sticky=tk.W)
-                self._rows.append(f)
-            self.grid_columnconfigure(0, weight=1)
+        # 按钮的 parent 必须是其所属行 Frame, 故一律重建(行数不变但按钮缺失时也要重建)
+        if not self._layout_ok(rows):
+            self._rebuild(rows)
 
-        # 重新指派 pack: 先全部解绑, 再按新行归属 pack 回去
-        for btn, _ in self._items:
+    def _layout_ok(self, rows: list) -> bool:
+        """校验按钮实例与行结构是否一致。"""
+        try:
+            if len(self._rows) != len(rows):
+                return False
+            total = sum(len(r) for r in rows)
+            if len(self._buttons) != total or total != len(self._specs):
+                return False
+            for row_idx, idxs in enumerate(rows):
+                frame = self._rows[row_idx]
+                if len(frame.winfo_children()) != len(idxs):
+                    return False
+            return True
+        except Exception:
+            return False
+
+    def _rebuild(self, rows: list):
+        """按行结构重建: 销毁旧行与旧按钮, 以行 Frame 为 parent 重新创建按钮。"""
+        for f in self._rows:
             try:
-                btn.pack_forget()
+                f.destroy()
             except Exception:
                 pass
-        for row_idx, row_btns in enumerate(rows):
+        self._rows = []
+        self._buttons = []
+
+        for i in range(len(rows)):
+            f = ttk.Frame(self)
+            # sticky 必须带 N: 只给 W 会让行在网格单元内垂直居中, 上方留白
+            f.grid(row=i, column=0, sticky=tk.NW)
+            self._rows.append(f)
+        self.grid_columnconfigure(0, weight=1)
+        for i in range(len(rows)):
+            self.grid_rowconfigure(i, weight=0)
+        # 末行之后留一个"吸收行", 让按钮组整体靠上紧凑排列
+        self.grid_rowconfigure(len(rows), weight=1)
+
+        for row_idx, idxs in enumerate(rows):
             frame = self._rows[row_idx]
-            for btn in row_btns:
-                btn.pack(in_=frame, side=tk.LEFT, padx=(0, self._gap), pady=2)
-
-
-
-
+            for idx in idxs:
+                text, command, width, style = self._specs[idx]
+                btn = ttk.Button(frame, text=text, command=command,
+                                 width=width, style=style)
+                btn.pack(side=tk.LEFT, padx=(0, self._gap), pady=2)
+                self._buttons.append(btn)
 
 def apply_responsive_treeview_columns(tree: ttk.Treeview, weights: list) -> None:
     """让 Treeview 各列按权重分配剩余宽度, 消除横向滚动条。
@@ -530,7 +636,10 @@ def apply_responsive_treeview_columns(tree: ttk.Treeview, weights: list) -> None
         # 无弹性列时直接按原宽处理(不做拉伸, 避免内容被拉宽变形)
         if flex_w == 0:
             return
-        remain = max(0, total - fixed - 4)
+        # Treeview 自身边框 + 可能的纵向滚动条要占用宽度, 必须扣掉;
+        # 这个开销随主题变化, 故实测而非常量(常量会导致末列表头被切掉几像素)。
+        overhead = max(0, total - sum(_tree_col_widths(tree)))
+        remain = max(0, total - fixed - overhead)
         for col, w, wt in zip(cols, min_widths, weights):
             if wt == 0:
                 try:
@@ -546,6 +655,160 @@ def apply_responsive_treeview_columns(tree: ttk.Treeview, weights: list) -> None
 
     tree.bind("<Configure>", _resize, add="+")
     tree.after(120, _resize)  # 首次布局完成后再算一次
+
+
+def _tree_col_widths(tree: ttk.Treeview) -> list:
+    """读取各列当前宽度, 用于推算 Treeview 的固定开销(边框/滚动条)。"""
+    widths = []
+    for col in tree["columns"]:
+        try:
+            widths.append(int(tree.column(col, "width")))
+        except Exception:
+            widths.append(0)
+    return widths
+
+
+def apply_adaptive_tree_height(
+    tree: ttk.Treeview,
+    min_rows: int = 5,
+    reserved_h: int = 0,
+    row_height: Optional[int] = None,
+    extra_budget: int = 0,
+    bottom_widget=None,
+) -> None:
+    """让 Treeview 显示行数随可用高度自适应, 而不是钉死固定行数。
+
+    第一性原理: 表格的目的是"尽可能多地展示步骤", 能显示几行应当由窗口
+    实际剩余空间决定。若把行数写死(如 height=12), 当窗口较矮或上方控件
+    (如换行的工具条)变高时, 表格会顽固地索要固定高度, 把下方按钮挤出窗口
+    —— 这正是"底部按钮被截断"的成因。
+
+    reserved_h: 除表格可视区外其它区域占用的总高(必须与表格当前高度无关,
+                否则会形成循环依赖, 参见调用方的注释)。
+    row_height: 单行像素高; 不传则用 Tk 默认字体下的实测值。
+    extra_budget: 额外预留的余量(如滚动条/多显示器取整误差)。
+    bottom_widget: 位于表格下方的控件(如底部按钮区)。校验时以"它是否仍完整
+        落在窗口可视区内"为最终判据 —— 这比比较 tree 与其父容器可靠得多,
+        因为父容器本身也会被 pack 压缩, 永远"不溢出"。
+
+    实现要点——为何不"一步算到位"而采用逐行逼近:
+    行高与表头开销是 Tk 主题决定的近似值, 直接除法算出的行数常有一两行误差,
+    误差累积后正好把底部按钮挤出可视区。因此这里"先算再验、超了就减",
+    以"渲染后底部控件不越界"为最终判据, 保证结果一定装得下。
+    """
+    def _row_h() -> float:
+        if row_height and row_height > 0:
+            return float(row_height)
+        try:
+            cur = max(1, int(tree.cget("height")))
+            h = tree.winfo_reqheight()
+            # reqheight = 表头 + 行数*行高 + 边框, 先扣表头开销再均分
+            est = (h - _TREE_CHROME_H) / cur
+            if 10 <= est <= 80:
+                return est
+        except Exception:
+            pass
+        return 26.0
+
+    def _clipped() -> bool:
+        """底部区域内的控件是否被挤出窗口可视区(即"按钮被截断")。
+
+        第一性原则: 只要底部控件不在窗口可视区内, 对用户就是"看不见/被切掉"。
+        因此判定必须覆盖三种情况, 缺一不可:
+        1. 控件底边超出窗口底边(被切);
+        2. 控件底边超出其容器底边(容器被压扁, 内部溢出);
+        3. 控件未被映射(容器高度不足以放置子控件时 Tk 直接不显示它)
+           —— 这是最严重的情况, 却最容易被"只看 ismapped"的写法漏掉。
+
+        绝不能加 `if not w.winfo_ismapped(): continue` 这种跳过条件:
+        未映射恰恰是最该报警的状态。
+        """
+        if bottom_widget is None:
+            return False
+        try:
+            win = tree.winfo_toplevel()
+            win_h = win.winfo_height()
+            if win_h <= 1:
+                return False
+            base = win.winfo_rooty()
+            c_h = bottom_widget.winfo_height()
+
+            # 情况 0: 容器自身被压扁(实际高度 < 请求高度) -> 内部按钮必被裁掉。
+            # 这是最隐蔽的一种: 按钮可能仍"映射着"且在窗口内, 但只露出上半截,
+            # 视觉上就是"按钮被切成两半"。
+            if c_h < bottom_widget.winfo_reqheight():
+                return True
+
+            for w in bottom_widget.winfo_children():
+                # 情况 3: 子控件未被映射 -> 用户看不到 -> 视为被切
+                if not w.winfo_ismapped():
+                    return True
+                # 子控件自身被压扁
+                if w.winfo_height() < w.winfo_reqheight():
+                    return True
+                # 情况 1: 超出窗口
+                if w.winfo_rooty() - base + w.winfo_height() > win_h:
+                    return True
+                # 情况 2: 溢出容器
+                if w.winfo_y() + w.winfo_height() > c_h:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _fit(event=None):
+        if _fitting[0]:
+            return
+        try:
+            top = tree.winfo_toplevel()
+            avail = top.winfo_height()
+        except Exception:
+            return
+        if avail <= 1:
+            return
+
+        _fitting[0] = True
+        try:
+            rh = _row_h()
+            box = max(0, avail - reserved_h - _TREE_CHROME_H - extra_budget)
+            rows = max(min_rows, int(box / rh))
+            try:
+                tree.configure(height=rows)
+                tree.update_idletasks()
+            except Exception:
+                return
+            # 逐行回退直到底部控件不再越界(至少保留 min_rows 行)
+            guard = 0
+            while _clipped() and rows > min_rows and guard < 80:
+                rows -= 1
+                try:
+                    tree.configure(height=rows)
+                    tree.update_idletasks()
+                except Exception:
+                    break
+                guard += 1
+            # 若已退到下限仍被切, 说明窗口本身太矮: 记录状态供调用方决策
+            _last_clipped[0] = _clipped()
+        finally:
+            _fitting[0] = False
+
+    _fitting = [False]
+    _last_clipped = [False]
+    tree.bind("<Configure>", _fit, add="+")
+    # 首帧字体/主题尚未测量完毕(工具条是否换行、按钮实际高度都还在变),
+    # 因此分多个时点各校正一次。仅靠 <Configure> 不够: 窗口尺寸不变时
+    # 该事件不再触发, 而 reserved_h 会因字体测量完成而发生变化。
+    for delay in (80, 200, 400, 700, 1200):
+        try:
+            tree.after(delay, _fit)
+        except Exception:
+            pass
+    # 暴露状态, 便于调用方自检或上报
+    tree._adaptive_clipped = _last_clipped  # type: ignore[attr-defined]
+
+
+# Treeview 的表头 + 水平边框等固定占用高度(实测约 26~30, 取保守值)
+_TREE_CHROME_H = 30
 
 
 

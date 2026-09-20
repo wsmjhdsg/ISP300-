@@ -21,11 +21,16 @@ from core.simulator import Simulator
 from core.ui_scale import fit_window_to_content
 from ui.styles import (
     ButtonFlow,
+    apply_adaptive_tree_height,
     apply_responsive_treeview_columns,
     fit_window_to_screen,
 )
 
 logger = get_logger(__name__)
+
+# 步序列表 LabelFrame 的框架开销(实测): 含边框、标题行、内部 padding 与
+# 表格自身的 padx/pady。与表格行数无关, 因此可作为常量参与高度分配计算。
+_LIST_FRAME_CHROME_H = 43
 
 
 class StepEditorDialog(tk.Toplevel):
@@ -56,6 +61,7 @@ class StepEditorDialog(tk.Toplevel):
     def _build_ui(self):
         info = ttk.Frame(self, padding=(10, 10))
         info.pack(fill=tk.X)
+        self._info_bar = info
         ttk.Label(
             info,
             text=f" 当前编辑: 机种 [{self.machine}]  /  累进 [{self.rate}]",
@@ -82,13 +88,17 @@ class StepEditorDialog(tk.Toplevel):
         )
         self._btn_flow = btn_bar
 
-        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10)
+        sep = ttk.Separator(self, orient=tk.HORIZONTAL)
+        sep.pack(fill=tk.X, padx=10)
+        self._sep = sep
 
         list_frame = ttk.LabelFrame(self, text="步序列表(双击某步骤可修改)", padding=5)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self._list_frame = list_frame
 
         cols = ("idx", "type", "detail", "wait")
-        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=12)
+        # height 只作初始值, 随后由 apply_adaptive_tree_height 按窗口实际高度重算
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=8)
         self.tree.heading("idx", text="序号")
         self.tree.heading("type", text="类型")
         self.tree.heading("detail", text="详细内容")
@@ -96,28 +106,94 @@ class StepEditorDialog(tk.Toplevel):
         self.tree.column("idx", width=60, anchor=tk.CENTER, stretch=False)
         self.tree.column("type", width=150, anchor=tk.W)
         self.tree.column("detail", width=320, anchor=tk.W)
-        self.tree.column("wait", width=80, anchor=tk.CENTER, stretch=False)
+        self.tree.column("wait", width=90, anchor=tk.CENTER, stretch=False)
         self.tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.tree.bind("<Double-1>", lambda e: self._edit_step())
         # 列宽按权重分配: 只有"类型/详细内容"吸收多余宽度, 序号与等待保持固定 -> 永不横向滚动
         apply_responsive_treeview_columns(self.tree, weights=[0, 1, 3, 0])
 
-        bottom = ttk.Frame(self, padding=10)
+        bottom = ttk.Frame(self, padding=(10, 8))
         bottom.pack(fill=tk.X)
+        self._bottom_bar = bottom
 
         self.count_label = ttk.Label(
             bottom,
             text=f"当前共 {len(self.steps)} 个步骤",
             foreground=UISettings.COLORS["info"],
         )
-        self.count_label.pack(side=tk.LEFT)
+        # anchor=W 让文字与右侧按钮在同一水平基线上, 避免 pack 默认居中导致错位
+        self.count_label.pack(side=tk.LEFT, anchor=tk.W)
 
+        # 按钮区独立成 Frame 并右对齐: 与左侧计数互不挤压, 窄窗也不会截断按钮
+        btn_box = ttk.Frame(bottom)
+        btn_box.pack(side=tk.RIGHT, anchor=tk.E)
         ttk.Button(
-            bottom, text="保存步序", command=self._save, width=UISettings.BTN_WIDTH_MD
+            btn_box, text="保存步序", command=self._save, width=UISettings.BTN_WIDTH_MD
         ).pack(side=tk.RIGHT, padx=UISettings.PAD_XS)
         ttk.Button(
-            bottom, text="取消", command=self._on_close, width=UISettings.BTN_WIDTH_SM
+            btn_box, text="取消", command=self._on_close, width=UISettings.BTN_WIDTH_SM
         ).pack(side=tk.RIGHT, padx=UISettings.PAD_XS)
+
+        # 表格高度自适应: 表格吃掉"窗口高 - 其它区域"的剩余空间。
+        # 这样无论工具条是否换行, 底部按钮都不会被挤出窗口。
+        self.after(160, self._fit_tree_height)
+        self.bind("<Configure>", self._on_dialog_resize, add="+")
+        self._last_h = 0
+
+    def _non_tree_height(self) -> int:
+        """计算除表格可视区外所有固定区域的高度之和。
+
+        第一性原则: 这个值必须与"表格当前多高"完全无关, 否则"改表格高度 ->
+        影响该值 -> 再改表格高度"会形成循环依赖, 在窗口缩放时算出错误行数。
+
+        特别注意: 不能用 list_frame.winfo_reqheight() - tree.winfo_reqheight()
+        来推算列表区框架开销 —— tree 的 reqheight 正是随行数变化的那一项,
+        相减会把行数的影响重新引入, 循环依赖依旧。改用固定常量表示
+        LabelFrame 的边框+标题+内边距开销。
+        """
+        total = 0
+        # 列表区以外: 直接用请求高度, 它们只由内容与字体决定, 稳定
+        for w in (getattr(self, "_info_bar", None),
+                  getattr(self, "_btn_flow", None),
+                  getattr(self, "_sep", None),
+                  getattr(self, "_bottom_bar", None)):
+            if w is None:
+                continue
+            try:
+                total += w.winfo_reqheight()
+            except Exception:
+                pass
+        # 列表区(LabelFrame)自身的框架开销: 边框 + 标题 + padding, 与表格行数无关
+        total += _LIST_FRAME_CHROME_H
+        # pack 的 pady: 列表区上下各 10
+        total += 20
+        return total
+
+    def _fit_tree_height(self):
+        """按当前窗口高度重算表格可见行数。"""
+        try:
+            avail = self.winfo_height()
+        except Exception:
+            return
+        if avail <= 1:
+            return
+        apply_adaptive_tree_height(
+            self.tree,
+            min_rows=5,
+            reserved_h=self._non_tree_height(),
+            bottom_widget=self._bottom_bar,
+        )
+
+    def _on_dialog_resize(self, event=None):
+        """窗口尺寸变化时重算表格行数(去抖, 避免拖动过程中频繁重排)。"""
+        try:
+            h = self.winfo_height()
+        except Exception:
+            return
+        if h == self._last_h:
+            return
+        self._last_h = h
+        self._fit_tree_height()
 
 
     def _type_label(self, t: str) -> str:
