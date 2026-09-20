@@ -16,6 +16,7 @@ from core.file_dialog import resolve_pick_steps
 from core.logger import get_logger
 from core.paths import resource_path
 from core.simulator import ExecutionSession
+from core.ui_scale import fit_window_to_content
 from ui.click_point_editor import ClickPointEditorDialog
 from ui.machine_editor import MachineEditorDialog
 from ui.styles import (
@@ -24,6 +25,7 @@ from ui.styles import (
     create_led,
     create_primary_button,
     create_scrolled_text,
+    set_action_button_state,
 )
 
 logger = get_logger(__name__)
@@ -31,12 +33,14 @@ logger = get_logger(__name__)
 
 class MainWindow(tk.Tk):
     LOG_MAX_LINES = 1500  # 日志区保留行数上限, 超出裁剪头部(完整日志在 logs/auto_isp.log)
+    # 低于此宽度时顶栏收起装饰性 subtitle, 保证"设置"按钮不被挤出可视区。
+    # 注意: 必须大于实际的窗口最小宽度(WINDOW_MINSIZE[0]), 否则窗口永远到不了
+    # 这个宽度, 该规则就成了死代码(踩过的坑)。
+    NARROW_WIDTH = UISettings.WINDOW_MINSIZE[0] + 120
 
     def __init__(self, config_manager):
         super().__init__()
         self.title("自动化脚本工具")
-        self.geometry(UISettings.WINDOW_SIZE)
-        self.minsize(*UISettings.WINDOW_MINSIZE)
         self.config_manager = config_manager
 
         self.is_running = False
@@ -57,7 +61,10 @@ class MainWindow(tk.Tk):
 
         apply_ttk_theme(self)
         self._build_ui()
+        # 几何收敛放到 UI 构建之后: 此时已算得出内容所需尺寸, 便于小屏合理分配
+        fit_window_to_content(self, UISettings.WINDOW_SIZE, UISettings.WINDOW_MINSIZE)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Configure>", self._on_window_resize)
 
     # ------------------------------------------------------------------ #
     # UI 构建
@@ -69,22 +76,28 @@ class MainWindow(tk.Tk):
         topbar = tk.Frame(self, bg=colors["bg_topbar"])
         topbar.pack(fill=tk.X)
 
-        tk.Label(
-            topbar,
+        # 左侧品牌区(允许被压缩, 不与右侧挤占)
+        brand = tk.Frame(topbar, bg=colors["bg_topbar"])
+        brand.pack(side=tk.LEFT, padx=(14, 8), pady=8)
+        self.brand_label = tk.Label(
+            brand,
             text="AUTOMATION  ISP300",
             bg=colors["bg_topbar"],
             fg=colors["text_on_dark"],
             font=(UISettings.FONT_TITLE, 13, "bold"),
-        ).pack(side=tk.LEFT, padx=(14, 8), pady=8)
-        tk.Label(
-            topbar,
+        )
+        self.brand_label.pack(side=tk.LEFT)
+        # 副标题: 窄窗口下自动隐藏, 避免与右侧状态区重叠
+        self.subtitle_label = tk.Label(
+            brand,
             text="自动化脚本工具",
             bg=colors["bg_topbar"],
             fg=colors["text_on_dark"],
             font=(UISettings.FONT_FAMILY, 11),
-        ).pack(side=tk.LEFT, pady=8)
+        )
+        self.subtitle_label.pack(side=tk.LEFT, padx=(10, 0))
 
-        # 状态指示灯 + 状态文字(右侧)
+        # 状态指示灯 + 状态文字(右侧, 优先保留)
         right = tk.Frame(topbar, bg=colors["bg_topbar"])
         right.pack(side=tk.RIGHT, padx=8, pady=6)
         self.led, self._led_set_color = create_led(right)
@@ -109,6 +122,7 @@ class MainWindow(tk.Tk):
             activeforeground=colors["text"],
             cursor="hand2",
             padx=14,
+            pady=3,
             highlightthickness=0,
         )
         self.settings_btn.pack(side=tk.LEFT)
@@ -118,10 +132,10 @@ class MainWindow(tk.Tk):
         self.settings_menu.add_command(label="点击位置编辑", command=self._open_click_point_editor)
 
         # ---- 主体: 铝灰底 + 白色任务卡片 ----
-        main = ttk.Frame(self, style="Window.TFrame", padding=12)
+        main = ttk.Frame(self, style="Window.TFrame", padding=UISettings.PAD_MD)
         main.pack(fill=tk.BOTH, expand=True)
 
-        card = ttk.Frame(main, style="Card.TFrame", padding=14)
+        card = ttk.Frame(main, style="Card.TFrame", padding=UISettings.PAD_LG)
         card.pack(fill=tk.BOTH, expand=True)
 
         # 任务参数
@@ -133,7 +147,7 @@ class MainWindow(tk.Tk):
         )
         self.machine_var = tk.StringVar()
         self.machine_combo = ttk.Combobox(
-            param, textvariable=self.machine_var, width=46, state="readonly"
+            param, textvariable=self.machine_var, width=40, state="readonly"
         )
         self.machine_combo.grid(row=0, column=1, sticky=tk.EW, pady=6)
         self.machine_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_rates())
@@ -143,44 +157,57 @@ class MainWindow(tk.Tk):
         )
         self.rate_var = tk.StringVar()
         self.rate_combo = ttk.Combobox(
-            param, textvariable=self.rate_var, width=46, state="readonly"
+            param, textvariable=self.rate_var, width=40, state="readonly"
         )
         self.rate_combo.grid(row=1, column=1, sticky=tk.EW, pady=6)
+        # 输入框列吸收所有多余宽度 -> 窗口缩放时不产生空白或溢出
         param.grid_columnconfigure(1, weight=1)
 
         # 操作区: 开始(信号橙) / 停止(工控红)
+        # 布局策略: 左侧按钮组 + 右侧任务标签分占两端; 任务标签可被压缩且过长时截断显示,
+        # 避免窄窗口下与左侧按钮重叠。
         action = ttk.Frame(card, style="Card.TFrame")
-        action.pack(fill=tk.X, pady=(12, 2))
-        self.start_btn = create_primary_button(action, "开始执行", self._start_burn, width=16)
+        action.pack(fill=tk.X, pady=(UISettings.PAD_MD, 2))
+
+        action_left = ttk.Frame(action, style="Card.TFrame")
+        action_left.pack(side=tk.LEFT)
+        self.start_btn = create_primary_button(
+            action_left, "开始执行", self._start_burn, width=14
+        )
         self.start_btn.pack(side=tk.LEFT, padx=(0, 10))
         self.stop_btn = create_action_button(
-            action,
+            action_left,
             "停止",
             self._stop_burn,
             bg=UISettings.COLORS["danger"],
             hover_bg="#A61E1E",
-            width=12,
+            width=10,
             font_size=12,
+            disabled_bg=UISettings.COLORS["bg_hover"],
         )
         self.stop_btn.configure(state=tk.DISABLED, cursor="arrow")
         self.stop_btn.pack(side=tk.LEFT)
+        set_action_button_state(self.stop_btn, False)
         self.fail_fast_check = ttk.Checkbutton(
-            action,
+            action_left,
             text="失败即中止(防烧错)",
             variable=self.fail_fast_var,
         )
         self.fail_fast_check.pack(side=tk.LEFT, padx=(14, 0))
+
+        # 任务标签: 右侧对齐, 宽度受限时由 Tk 自动裁切, 不与左侧争位
         self.task_label = ttk.Label(
             action,
             text="尚未选择任务",
             foreground=UISettings.COLORS["text_secondary"],
             font=(UISettings.FONT_FAMILY, 10),
+            anchor=tk.E,
         )
-        self.task_label.pack(side=tk.RIGHT)
+        self.task_label.pack(side=tk.RIGHT, padx=(UISettings.PAD_SM, 0))
 
         # 进度 + 状态
         prog_row = ttk.Frame(card, style="Card.TFrame")
-        prog_row.pack(fill=tk.X, pady=(8, 0))
+        prog_row.pack(fill=tk.X, pady=(UISettings.PAD_SM, 0))
         ttk.Label(prog_row, text="执行进度:", font=(UISettings.FONT_FAMILY, 10)).pack(
             side=tk.LEFT
         )
@@ -196,18 +223,55 @@ class MainWindow(tk.Tk):
             text="等待开始...",
             foreground=UISettings.COLORS["text_secondary"],
             font=(UISettings.FONT_FAMILY, 10),
+            anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=680,   # 长状态自动换行, 不撑破窗口(随窗口宽度动态更新)
         )
-        self.status_label.pack(fill=tk.X, pady=(8, 2))
+        self.status_label.pack(fill=tk.X, pady=(UISettings.PAD_SM, 2))
 
-        # 执行日志
-        log_frame = ttk.LabelFrame(
-            card, text="执行日志 (界面仅保留最近 %d 行, 完整日志见 logs/)" % self.LOG_MAX_LINES, padding=6
+        # 执行日志: 权重化的自适应区域(窗口拉高时自动扩展, 压缩时自动收缩)
+        self.log_frame = ttk.LabelFrame(
+            card,
+            text="执行日志 (界面仅保留最近 %d 行, 完整日志见 logs/)" % self.LOG_MAX_LINES,
+            padding=6,
         )
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
-        self.log_text = create_scrolled_text(log_frame, height=14)
+        self.log_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.log_text = create_scrolled_text(self.log_frame, width=60, height=10)
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
         self._refresh_machines()
+
+    # ------------------------------------------------------------------ #
+    # 响应式: 宽度变化时收敛文字与换行宽度
+    # ------------------------------------------------------------------ #
+    def _on_window_resize(self, event=None):
+        """窗口尺寸变化时的轻量适配(去抖: 只在宽度真正变化时处理)。"""
+        if event is not None and event.widget is not self:
+            return
+        try:
+            w = self.winfo_width()
+        except Exception:
+            return
+        if getattr(self, "_last_w", None) == w:
+            return
+        self._last_w = w
+
+        # 顶栏副标题: 窄窗口隐藏, 保证右侧状态/设置按钮始终可见可点
+        try:
+            if w < self.NARROW_WIDTH:
+                if self.subtitle_label.winfo_ismapped():
+                    self.subtitle_label.pack_forget()
+            elif not self.subtitle_label.winfo_ismapped():
+                self.subtitle_label.pack(side=tk.LEFT, padx=(10, 0))
+        except Exception:
+            pass
+
+        # 状态文字换行宽度跟随窗口, 避免长文案撑出横向滚动条
+        try:
+            self.status_label.configure(wraplength=max(240, w - 120))
+        except Exception:
+            pass
+
 
     # ------------------------------------------------------------------ #
     # 跨线程安全刷新: 统一收敛到 after(0, ...)
@@ -328,10 +392,12 @@ class MainWindow(tk.Tk):
         """进入执行态(仅预检与文件选择全部通过后调用)。"""
         self.is_running = True
         self._led_set_color(UISettings.COLORS["led_running"])
-        self.start_btn.configure(
-            state=tk.DISABLED, text="执行中...", bg=UISettings.COLORS["warning"]
+        # 开始按钮: 禁用 + 文案切换 + 琥珀色提示正在执行
+        set_action_button_state(
+            self.start_btn, False, text="执行中...", bg=UISettings.COLORS["warning"]
         )
-        self.stop_btn.configure(state=tk.NORMAL, cursor="hand2")
+        # 停止按钮: 启用(红色可点)
+        set_action_button_state(self.stop_btn, True, bg=UISettings.COLORS["danger"])
         self.progress.configure(value=0)
         self.percent_label.configure(text="0%")
         self.log_text.delete("1.0", tk.END)
@@ -454,10 +520,12 @@ class MainWindow(tk.Tk):
     def _reset_controls(self):
         colors = UISettings.COLORS
         self.is_running = False
-        self.start_btn.configure(
-            state=tk.NORMAL, text="开始执行", bg=colors["accent"], fg=colors["text_on_accent"]
+        # 开始按钮: 恢复信号橙 + 原文案
+        set_action_button_state(
+            self.start_btn, True, text="开始执行", bg=colors["accent"]
         )
-        self.stop_btn.configure(state=tk.DISABLED, cursor="arrow")
+        # 停止按钮: 回到禁用态
+        set_action_button_state(self.stop_btn, False)
         self._led_set_color(colors["led_idle"])
 
     def _on_close(self):

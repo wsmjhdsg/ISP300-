@@ -93,11 +93,38 @@ class UISettings:
     # 图标(相对项目根 / PyInstaller _MEIPASS 的资源路径)
     APP_ICON: Final[str] = "assets/icon.ico"
 
+    # —— 窗口尺寸 ——
+    # 说明: 这些值现在作为【首选尺寸/下限】使用, 实际显示尺寸由
+    # ui/styles.fit_window_to_screen() 依据当前屏幕与 DPI 收敛, 保证小屏可用、大屏不局促。
     WINDOW_SIZE: Final[str] = "780x720"
     WINDOW_MINSIZE: Final[tuple] = (700, 620)
     CLICK_POINT_EDITOR_SIZE: Final[str] = "600x480"
+    CLICK_POINT_EDITOR_MINSIZE: Final[tuple] = (560, 420)
     STEP_EDITOR_SIZE: Final[str] = "1050x650"
+    STEP_EDITOR_MINSIZE: Final[tuple] = (820, 520)
     MACHINE_EDITOR_SIZE: Final[str] = "920x450"
+    MACHINE_EDITOR_MINSIZE: Final[tuple] = (760, 420)
+
+    # 窗口占屏幕可用区域的最大比例(留出任务栏/边距, 避免顶天立地)
+    WINDOW_SCREEN_RATIO: Final[float] = 0.92
+    # 内容区最小可视高度/宽度(低于此值自动启用滚动容器, 见 styles.ScrollableFrame)
+    MIN_CONTENT_HEIGHT: Final[int] = 480
+
+    # —— 间距 token(统一内边距/外边距节奏, 避免各处随手写数字) ——
+    PAD_XS: Final[int] = 4
+    PAD_SM: Final[int] = 8
+    PAD_MD: Final[int] = 12
+    PAD_LG: Final[int] = 16
+
+    # —— 控件尺寸 token(保证全站按钮/输入框高度视觉一致) ——
+    BTN_PAD_X: Final[int] = 14          # ttk 按钮左右内边距
+    BTN_PAD_Y: Final[int] = 7           # ttk 按钮上下内边距
+    BTN_WIDTH_SM: Final[int] = 10       # 字符宽: 短按钮(上移/下移)
+    BTN_WIDTH_MD: Final[int] = 12       # 字符宽: 常规操作按钮
+    BTN_WIDTH_LG: Final[int] = 18       # 字符宽: 长文案按钮
+    ENTRY_PAD: Final[int] = 5           # 输入框内边距
+    ROW_HEIGHT: Final[int] = 26         # 表格行高
+    ROW_HEIGHT_COMPACT: Final[int] = 24 # 表格行高(紧凑模式, 小屏用)
 
     # 工业风字体: 正文 Segoe UI(清爽), 标题 Bahnschrift(工程感 DIN 风), 日志等宽 Consolas
     FONT_FAMILY: Final[str] = "Segoe UI"

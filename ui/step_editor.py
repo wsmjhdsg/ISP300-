@@ -18,6 +18,12 @@ from core.constants import (
 )
 from core.logger import get_logger
 from core.simulator import Simulator
+from core.ui_scale import fit_window_to_content
+from ui.styles import (
+    ButtonFlow,
+    apply_responsive_treeview_columns,
+    fit_window_to_screen,
+)
 
 logger = get_logger(__name__)
 
@@ -30,8 +36,6 @@ class StepEditorDialog(tk.Toplevel):
     def __init__(self, master, config_manager, machine, rate, steps):
         super().__init__(master)
         self.title(f"步序编辑 - {machine} / {rate}")
-        self.geometry(UISettings.STEP_EDITOR_SIZE)
-        self.minsize(720, 520)
         self.configure(bg=UISettings.COLORS["bg_window"])
         self.config_manager = config_manager
         self.machine = machine
@@ -43,6 +47,11 @@ class StepEditorDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
         self._refresh_steps()
+        # 几何收敛: 小屏自动缩小且不越界, 大屏给足宽度
+        fit_window_to_content(
+            self, UISettings.STEP_EDITOR_SIZE, UISettings.STEP_EDITOR_MINSIZE
+        )
+        self.transient(master)
 
     def _build_ui(self):
         info = ttk.Frame(self, padding=(10, 10))
@@ -57,34 +66,21 @@ class StepEditorDialog(tk.Toplevel):
             foreground=UISettings.COLORS["text_secondary"],
         ).pack(side=tk.LEFT)
 
-        btn_bar = ttk.Frame(self, padding=(10, 5))
+        # 工具条: 用自动换行容器, 窄窗口下变为两行而不是把按钮挤掉/截断
+        btn_bar = ButtonFlow(self, padding=(10, 5))
         btn_bar.pack(fill=tk.X)
-
-        ttk.Button(btn_bar, text="末尾新增", command=self._add_step_at_end, width=12).pack(
-            side=tk.LEFT, padx=3
-        )
-        ttk.Button(btn_bar, text="上方插入", command=self._insert_step_before, width=12).pack(
-            side=tk.LEFT, padx=3
-        )
-        ttk.Button(btn_bar, text="下方插入", command=self._insert_step_after, width=12).pack(
-            side=tk.LEFT, padx=3
-        )
-        ttk.Button(btn_bar, text="修改选中", command=self._edit_step, width=12).pack(
-            side=tk.LEFT, padx=3
-        )
-        ttk.Button(btn_bar, text="删除选中", command=self._delete_step, width=12).pack(
-            side=tk.LEFT, padx=3
-        )
-        ttk.Button(btn_bar, text="上移", command=lambda: self._move_step(-1), width=10).pack(
-            side=tk.LEFT, padx=3
-        )
-        ttk.Button(btn_bar, text="下移", command=lambda: self._move_step(1), width=10).pack(
-            side=tk.LEFT, padx=3
-        )
+        btn_bar.add("末尾新增", self._add_step_at_end, width=UISettings.BTN_WIDTH_MD)
+        btn_bar.add("上方插入", self._insert_step_before, width=UISettings.BTN_WIDTH_MD)
+        btn_bar.add("下方插入", self._insert_step_after, width=UISettings.BTN_WIDTH_MD)
+        btn_bar.add("修改选中", self._edit_step, width=UISettings.BTN_WIDTH_MD)
+        btn_bar.add("删除选中", self._delete_step, width=UISettings.BTN_WIDTH_MD)
+        btn_bar.add("上移", lambda: self._move_step(-1), width=UISettings.BTN_WIDTH_SM)
+        btn_bar.add("下移", lambda: self._move_step(1), width=UISettings.BTN_WIDTH_SM)
         # 复制步序: 把其他机种/累进的已保存步序追加到当前编辑列表(复用现有加载/保存逻辑)
-        ttk.Button(
-            btn_bar, text="复制自其他机种…", command=self._copy_steps_from_other, width=18
-        ).pack(side=tk.LEFT, padx=(20, 3))
+        btn_bar.add(
+            "复制自其他机种…", self._copy_steps_from_other, width=UISettings.BTN_WIDTH_LG
+        )
+        self._btn_flow = btn_bar
 
         ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10)
 
@@ -92,17 +88,19 @@ class StepEditorDialog(tk.Toplevel):
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         cols = ("idx", "type", "detail", "wait")
-        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=18)
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=12)
         self.tree.heading("idx", text="序号")
         self.tree.heading("type", text="类型")
         self.tree.heading("detail", text="详细内容")
         self.tree.heading("wait", text="等待(秒)")
-        self.tree.column("idx", width=60, anchor=tk.CENTER)
-        self.tree.column("type", width=160)
-        self.tree.column("detail", width=450)
-        self.tree.column("wait", width=80, anchor=tk.CENTER)
+        self.tree.column("idx", width=60, anchor=tk.CENTER, stretch=False)
+        self.tree.column("type", width=150, anchor=tk.W)
+        self.tree.column("detail", width=320, anchor=tk.W)
+        self.tree.column("wait", width=80, anchor=tk.CENTER, stretch=False)
         self.tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.tree.bind("<Double-1>", lambda e: self._edit_step())
+        # 列宽按权重分配: 只有"类型/详细内容"吸收多余宽度, 序号与等待保持固定 -> 永不横向滚动
+        apply_responsive_treeview_columns(self.tree, weights=[0, 1, 3, 0])
 
         bottom = ttk.Frame(self, padding=10)
         bottom.pack(fill=tk.X)
@@ -114,8 +112,13 @@ class StepEditorDialog(tk.Toplevel):
         )
         self.count_label.pack(side=tk.LEFT)
 
-        ttk.Button(bottom, text="保存步序", command=self._save, width=14).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(bottom, text="取消", command=self._on_close, width=10).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(
+            bottom, text="保存步序", command=self._save, width=UISettings.BTN_WIDTH_MD
+        ).pack(side=tk.RIGHT, padx=UISettings.PAD_XS)
+        ttk.Button(
+            bottom, text="取消", command=self._on_close, width=UISettings.BTN_WIDTH_SM
+        ).pack(side=tk.RIGHT, padx=UISettings.PAD_XS)
+
 
     def _type_label(self, t: str) -> str:
         return STEP_SHORT_LABELS.get(t, t)
@@ -278,11 +281,12 @@ class StepEditorDialog(tk.Toplevel):
 
         dlg = tk.Toplevel(self)
         dlg.title("复制步序")
-        dlg.geometry("460x230")
         dlg.configure(bg=UISettings.COLORS["bg_window"])
         dlg.transient(self)
         dlg.grab_set()
         dlg.resizable(False, False)
+        # 自适应: 小屏不越界, 大屏按首选尺寸
+        fit_window_to_screen(dlg, "460x240", (420, 220))
 
         frm = ttk.Frame(dlg, padding=15)
         frm.pack(fill=tk.BOTH, expand=True)
@@ -296,18 +300,24 @@ class StepEditorDialog(tk.Toplevel):
         labels = [f"{n} / {r}   ({c} 步)" for n, r, c in sources]
         src_var = tk.StringVar(value=labels[0])
         combo = ttk.Combobox(
-            frm, textvariable=src_var, values=labels, width=44, state="readonly"
+            frm, textvariable=src_var, values=labels, state="readonly"
         )
-        combo.pack(anchor=tk.W, pady=(0, 10))
+        combo.pack(fill=tk.X, pady=(0, 10))
 
         hint = ttk.Label(
             frm,
             text="",
             foreground=UISettings.COLORS["text_secondary"],
-            wraplength=420,
+            wraplength=380,
             justify=tk.LEFT,
         )
-        hint.pack(anchor=tk.W, pady=(0, 12))
+        hint.pack(fill=tk.X, pady=(0, 12))
+        # 换行宽度跟随窗口, 文案不截断也不撑破
+        dlg.bind(
+            "<Configure>",
+            lambda e, lb=hint: lb.configure(wraplength=max(200, e.width - 50)),
+            add="+",
+        )
 
         def refresh_hint(*_args):
             try:
@@ -348,10 +358,12 @@ class StepEditorDialog(tk.Toplevel):
                 parent=self,
             )
 
-        ttk.Button(btn_frm, text="复制", command=on_ok, width=12).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frm, text="取消", command=dlg.destroy, width=12).pack(
-            side=tk.RIGHT, padx=5
-        )
+        ttk.Button(
+            btn_frm, text="复制", command=on_ok, width=UISettings.BTN_WIDTH_MD
+        ).pack(side=tk.RIGHT, padx=UISettings.PAD_XS)
+        ttk.Button(
+            btn_frm, text="取消", command=dlg.destroy, width=UISettings.BTN_WIDTH_MD
+        ).pack(side=tk.RIGHT, padx=UISettings.PAD_XS)
 
         dlg.wait_window()
 
@@ -402,11 +414,11 @@ class StepEditorDialog(tk.Toplevel):
     def _open_step_dialog(self, existing_step: Optional[dict]) -> Optional[dict]:
         dlg = tk.Toplevel(self)
         dlg.title("编辑步骤" if existing_step else "新增步骤")
-        dlg.geometry("520x440")
-        dlg.minsize(480, 400)
         dlg.configure(bg=UISettings.COLORS["bg_window"])
         dlg.transient(self)
         dlg.grab_set()
+        # 自适应: 表单内容高度会随步骤类型变化, 给足首选高度并允许拉伸
+        fit_window_to_screen(dlg, "540x470", (460, 400))
 
         frm = ttk.Frame(dlg, padding=15)
         frm.pack(fill=tk.BOTH, expand=True)
@@ -419,10 +431,9 @@ class StepEditorDialog(tk.Toplevel):
             frm,
             textvariable=type_var,
             values=[v for _, v in self.STEP_TYPES],
-            width=38,
             state="readonly",
         )
-        type_combo.grid(row=0, column=1, columnspan=2, sticky=tk.W, pady=8)
+        type_combo.grid(row=0, column=1, columnspan=2, sticky=tk.EW, pady=8)
 
         ttk.Separator(frm, orient=tk.HORIZONTAL).grid(
             row=1, column=0, columnspan=3, sticky=tk.EW, pady=10
@@ -432,6 +443,10 @@ class StepEditorDialog(tk.Toplevel):
         dynamic.grid(row=2, column=0, columnspan=3, sticky=tk.NSEW, pady=5)
         frm.grid_columnconfigure(1, weight=1)
         frm.grid_rowconfigure(2, weight=1)
+        # 动态表单内部同样按列权重伸缩, 使输入框/下拉框跟随窗口宽度而非固定字符宽
+        dynamic.grid_columnconfigure(0, weight=1)
+        dynamic.grid_columnconfigure(1, weight=1)
+        dynamic.grid_columnconfigure(2, weight=0)
 
         result = {"value": None}
 
@@ -487,8 +502,12 @@ class StepEditorDialog(tk.Toplevel):
                     result["value"] = s
                     dlg.destroy()
 
-        ttk.Button(btn_frm, text="确定", command=on_ok, width=12).pack(side=tk.LEFT, padx=10)
-        ttk.Button(btn_frm, text="取消", command=dlg.destroy, width=12).pack(side=tk.LEFT, padx=10)
+        ttk.Button(
+            btn_frm, text="确定", command=on_ok, width=UISettings.BTN_WIDTH_MD
+        ).pack(side=tk.LEFT, padx=UISettings.PAD_SM)
+        ttk.Button(
+            btn_frm, text="取消", command=dlg.destroy, width=UISettings.BTN_WIDTH_MD
+        ).pack(side=tk.LEFT, padx=UISettings.PAD_SM)
 
         dlg.wait_window()
         return result["value"]
@@ -510,7 +529,7 @@ class StepEditorDialog(tk.Toplevel):
 
         row_path = ttk.Frame(parent)
         row_path.grid(row=1, column=0, columnspan=3, sticky=tk.EW, pady=5)
-        ttk.Entry(row_path, textvariable=path_var, width=55).pack(
+        ttk.Entry(row_path, textvariable=path_var, width=40).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5)
         )
 
@@ -577,7 +596,7 @@ class StepEditorDialog(tk.Toplevel):
             width=34,
             state="readonly",
         )
-        mode_combo.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=5)
+        mode_combo.grid(row=1, column=0, columnspan=3, sticky=tk.EW, pady=5)
 
         def current_mode() -> str:
             return display_to_mode.get(mode_var.get(), OpenFileModes.PATH)
@@ -600,18 +619,25 @@ class StepEditorDialog(tk.Toplevel):
                 return row
 
             def add_hint(text: str, color: str = "text_secondary"):
-                ttk.Label(
+                lbl = ttk.Label(
                     body,
                     text=text,
                     foreground=UISettings.COLORS.get(color, UISettings.COLORS["text_secondary"]),
-                    wraplength=430,
+                    wraplength=380,
                     justify=tk.LEFT,
-                ).pack(anchor=tk.W, pady=(0, 2))
+                )
+                lbl.pack(fill=tk.X, anchor=tk.W, pady=(0, 2))
+                # 提示文字换行宽度跟随容器实际宽度, 避免长句被截断或撑出横向滚动条
+                body.bind(
+                    "<Configure>",
+                    lambda e, lb=lbl: lb.configure(wraplength=max(180, e.width - 20)),
+                    add="+",
+                )
 
             if mode == OpenFileModes.PATH:
                 fields["path_var"] = tk.StringVar(value=str(existing.get("path", "")))
                 row = add_row("文件路径:")
-                ttk.Entry(row, textvariable=fields["path_var"], width=48).pack(
+                ttk.Entry(row, textvariable=fields["path_var"], width=36).pack(
                     side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5)
                 )
 
@@ -633,7 +659,7 @@ class StepEditorDialog(tk.Toplevel):
                     value=str(existing.get("pattern") or "*.i3s")
                 )
                 row = add_row("固件目录:")
-                ttk.Entry(row, textvariable=fields["dir_var"], width=48).pack(
+                ttk.Entry(row, textvariable=fields["dir_var"], width=36).pack(
                     side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5)
                 )
 
@@ -698,8 +724,8 @@ class StepEditorDialog(tk.Toplevel):
 
         if names:
             ttk.Combobox(
-                parent, textvariable=point_var, values=names, width=40, state="readonly"
-            ).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=5)
+                parent, textvariable=point_var, values=names, state="readonly"
+            ).grid(row=1, column=0, columnspan=3, sticky=tk.EW, pady=5)
         else:
             ttk.Label(
                 parent,
@@ -797,7 +823,7 @@ class StepEditorDialog(tk.Toplevel):
 
         text_box = tk.Text(
             parent,
-            width=50,
+            width=40,
             height=6,
             font=(UISettings.FONT_MONO, 11),
             bg=UISettings.COLORS["bg_card"],
@@ -809,7 +835,7 @@ class StepEditorDialog(tk.Toplevel):
             highlightbackground=UISettings.COLORS["border_light"],
             highlightcolor=UISettings.COLORS["accent"],
         )
-        text_box.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=5)
+        text_box.grid(row=1, column=0, columnspan=3, sticky=tk.NSEW, pady=5)
         if existing_step and existing_step.get("type") == StepTypes.TYPE:
             text_box.insert("1.0", existing_step.get("text", ""))
 
@@ -817,6 +843,8 @@ class StepEditorDialog(tk.Toplevel):
             parent,
             text="注意: Hello ≠ hello, 大小写不同。中文/数字/符号均正常支持。",
             foreground=UISettings.COLORS["text_secondary"],
+            wraplength=380,
+            justify=tk.LEFT,
         ).grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(5, 10))
 
         def pack_step():
@@ -855,14 +883,12 @@ class StepEditorDialog(tk.Toplevel):
         ttk.Label(row_key, text="按键: ").pack(side=tk.LEFT)
         ttk.Entry(row_key, textvariable=key_var, width=20).pack(side=tk.LEFT, padx=5)
 
-        quick_frame = ttk.Frame(parent)
-        quick_frame.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=5)
+        quick_frame = ButtonFlow(parent, padding=(0, 0))
+        quick_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=5)
         for quick_key in QUICK_KEYS:
             def set_k(k=quick_key):
                 key_var.set(k)
-            ttk.Button(quick_frame, text=quick_key.upper(), command=set_k, width=6).pack(
-                side=tk.LEFT, padx=2
-            )
+            quick_frame.add(quick_key.upper(), set_k, width=8)
 
         def pack_step():
             k = key_var.get().strip().lower()
@@ -890,14 +916,12 @@ class StepEditorDialog(tk.Toplevel):
         ttk.Entry(row_sec, textvariable=sec_var, width=15).pack(side=tk.LEFT, padx=5)
         ttk.Label(row_sec, text="秒", font=(UISettings.FONT_FAMILY, 11)).pack(side=tk.LEFT)
 
-        quick_frame = ttk.Frame(parent)
-        quick_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=10)
+        quick_frame = ButtonFlow(parent, padding=(0, 0))
+        quick_frame.grid(row=2, column=0, columnspan=3, sticky=tk.EW, pady=10)
         for quick_sec in QUICK_WAIT_SECONDS:
             def set_s(s=quick_sec):
                 sec_var.set(s)
-            ttk.Button(quick_frame, text=f"{quick_sec}秒", command=set_s, width=6).pack(
-                side=tk.LEFT, padx=2
-            )
+            quick_frame.add(f"{quick_sec}秒", set_s, width=8)
 
         ttk.Label(
             parent,
@@ -927,7 +951,7 @@ class StepEditorDialog(tk.Toplevel):
             parent,
             text="监控 ISP300 弹出标题为 COMPLETE 的弹窗:\n正文含 Verify OK -> 判定成功并自动点[确定]关闭;\n超时未收到 -> 判定失败(宁严勿松)。建议紧跟 Send Data 步骤。",
             foreground=UISettings.COLORS["text_secondary"],
-            wraplength=430,
+            wraplength=380,
             justify=tk.LEFT,
         ).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(0, 8))
 
@@ -942,14 +966,12 @@ class StepEditorDialog(tk.Toplevel):
         ttk.Entry(row_sec, textvariable=timeout_var, width=12).pack(side=tk.LEFT, padx=5)
         ttk.Label(row_sec, text="秒", font=(UISettings.FONT_FAMILY, 11)).pack(side=tk.LEFT)
 
-        quick_frame = ttk.Frame(parent)
-        quick_frame.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=5)
+        quick_frame = ButtonFlow(parent, padding=(0, 0))
+        quick_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=5)
         for quick_sec in ("30", "60", "120", "180", "300"):
             def set_s(s=quick_sec):
                 timeout_var.set(s)
-            ttk.Button(quick_frame, text=f"{quick_sec}s", command=set_s, width=6).pack(
-                side=tk.LEFT, padx=2
-            )
+            quick_frame.add(f"{quick_sec}s", set_s, width=8)
 
         def pack_step():
             try:

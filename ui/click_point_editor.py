@@ -10,6 +10,12 @@ from core.constants import (
 )
 from core.logger import get_logger
 from core.recorder import ClickRecorder
+from core.ui_scale import fit_window_to_content
+from ui.styles import (
+    ButtonFlow,
+    apply_responsive_treeview_columns,
+    fit_window_to_screen,
+)
 
 logger = get_logger(__name__)
 
@@ -18,8 +24,6 @@ class ClickPointEditorDialog(tk.Toplevel):
     def __init__(self, master, config_manager):
         super().__init__(master)
         self.title("点击位置编辑")
-        self.geometry(UISettings.CLICK_POINT_EDITOR_SIZE)
-        self.minsize(550, 400)
         self.configure(bg=UISettings.COLORS["bg_window"])
         self.config_manager = config_manager
         self.recorder = None
@@ -27,47 +31,90 @@ class ClickPointEditorDialog(tk.Toplevel):
 
         self._build_ui()
         self._refresh()
+        # 内容已构建: 按"实际内容 + 首选"收敛尺寸并居中(小屏不越界, 大屏不局促)
+        fit_window_to_content(
+            self, UISettings.CLICK_POINT_EDITOR_SIZE, UISettings.CLICK_POINT_EDITOR_MINSIZE
+        )
+        self.transient(master)
 
     def _build_ui(self):
-        top = ttk.Frame(self, padding=10)
+        colors = UISettings.COLORS
+
+        top = ttk.Frame(self, padding=(UISettings.PAD_MD, UISettings.PAD_SM))
         top.pack(fill=tk.X)
 
-        ttk.Button(top, text="新增坐标(点击记录)", command=self._add_point, width=18).pack(
-            side=tk.LEFT, padx=3
+        # 工具条: 自动换行, 窄窗口下折成两行而不是把按钮挤掉/文字截断
+        toolbar = ButtonFlow(top, padding=(0, 2))
+        toolbar.pack(fill=tk.X)
+        toolbar.add(
+            "新增坐标(点击记录)", self._add_point, width=UISettings.BTN_WIDTH_LG
         )
-        ttk.Button(top, text="新增控件(枚举ISP300)", command=self._add_control, width=20).pack(
-            side=tk.LEFT, padx=3
+        toolbar.add(
+            "新增控件(枚举ISP300)", self._add_control, width=UISettings.BTN_WIDTH_LG
         )
-        ttk.Button(top, text="修改选中", command=self._edit_point, width=12).pack(
-            side=tk.LEFT, padx=3
-        )
-        ttk.Button(top, text="删除选中", command=self._delete_point, width=12).pack(
-            side=tk.LEFT, padx=3
-        )
+        toolbar.add("修改选中", self._edit_point, width=UISettings.BTN_WIDTH_MD)
+        toolbar.add("删除选中", self._delete_point, width=UISettings.BTN_WIDTH_MD)
 
-        self.status_label = ttk.Label(top, text="", foreground=UISettings.COLORS["info"])
-        self.status_label.pack(side=tk.LEFT, padx=15)
+        # 状态行: 与工具条同宽, 长文案自动换行(不撑出横向滚动条)
+        self.status_label = ttk.Label(
+            top,
+            text="",
+            foreground=colors["info"],
+            justify=tk.LEFT,
+            anchor=tk.W,
+            wraplength=560,
+        )
+        self.status_label.pack(fill=tk.X, pady=(UISettings.PAD_SM, 0), anchor=tk.W)
 
-        hint = ttk.Label(
+        self.hint = ttk.Label(
             self,
-            text="说明: \"新增坐标\" 后点击目标位置记录屏幕坐标; \"新增控件\" 枚举 ISP300 的按钮/下拉框/输入框等控件按类型和标识定位(抗窗口移动)。\n每个点都会记录按键方式, 在步序编辑中使用该点时沿用此按键方式。",
-            foreground=UISettings.COLORS["text_secondary"],
-            padding=(10, 0),
+            text=(
+                "说明: \"新增坐标\" 后点击目标位置记录屏幕坐标; \"新增控件\" 枚举 ISP300 的"
+                "按钮/下拉框/输入框等控件按类型和标识定位(抗窗口移动)。\n"
+                "每个点都会记录按键方式, 在步序编辑中使用该点时沿用此按键方式。"
+            ),
+            foreground=colors["text_secondary"],
+            justify=tk.LEFT,
+            anchor=tk.W,
+            wraplength=560,
         )
-        hint.pack(fill=tk.X)
+        self.hint.pack(fill=tk.X, padx=UISettings.PAD_MD)
 
         cols = ("name", "kind", "locator", "button")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=15)
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=14)
         self.tree.heading("name", text="名称")
         self.tree.heading("kind", text="类型")
         self.tree.heading("locator", text="定位信息")
         self.tree.heading("button", text="按键方式")
-        self.tree.column("name", width=150)
-        self.tree.column("kind", width=60, anchor=tk.CENTER)
-        self.tree.column("locator", width=220)
-        self.tree.column("button", width=100, anchor=tk.CENTER)
-        self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.tree.column("name", width=150, anchor=tk.W)
+        self.tree.column("kind", width=60, anchor=tk.CENTER, stretch=False)
+        self.tree.column("locator", width=220, anchor=tk.W)
+        self.tree.column("button", width=100, anchor=tk.CENTER, stretch=False)
+        self.tree.pack(fill=tk.BOTH, expand=True, padx=UISettings.PAD_MD, pady=UISettings.PAD_MD)
         self.tree.bind("<Double-1>", lambda e: self._edit_point())
+        # 名称/定位信息吸收多余宽度, 类型与按键保持固定 -> 永不横向滚动
+        apply_responsive_treeview_columns(self.tree, weights=[2, 0, 4, 0])
+
+        # 窗口宽度变化: 同步提示文字与状态文字的换行宽度
+        self.bind("<Configure>", self._on_resize, add="+")
+
+    def _on_resize(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+        try:
+            w = self.winfo_width()
+        except Exception:
+            return
+        if getattr(self, "_last_w", None) == w:
+            return
+        self._last_w = w
+        wrap = max(240, w - 40)
+        for lbl in (getattr(self, "hint", None), getattr(self, "status_label", None)):
+            if lbl is not None:
+                try:
+                    lbl.configure(wraplength=wrap)
+                except Exception:
+                    pass
 
     def _refresh(self):
         for item in self.tree.get_children():
@@ -183,32 +230,34 @@ class ClickPointEditorDialog(tk.Toplevel):
     def _pick_control(self, controls):
         dlg = tk.Toplevel(self)
         dlg.title("选择 ISP300 控件")
-        dlg.geometry("560x420")
-        dlg.minsize(480, 320)
         dlg.configure(bg=UISettings.COLORS["bg_window"])
         dlg.transient(self)
         dlg.grab_set()
 
         result = {"control": None}
 
-        frm = ttk.Frame(dlg, padding=10)
+        frm = ttk.Frame(dlg, padding=UISettings.PAD_MD)
         frm.pack(fill=tk.BOTH, expand=True)
 
         row_filter = ttk.Frame(frm)
-        row_filter.pack(fill=tk.X, pady=(0, 8))
+        row_filter.pack(fill=tk.X, pady=(0, UISettings.PAD_SM))
         ttk.Label(row_filter, text="过滤:").pack(side=tk.LEFT)
         filter_var = tk.StringVar()
-        ttk.Entry(row_filter, textvariable=filter_var, width=30).pack(side=tk.LEFT, padx=5)
+        filter_entry = ttk.Entry(row_filter, textvariable=filter_var)
+        filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(UISettings.PAD_XS, 0))
+        filter_entry.focus_set()
 
         cols = ("ctype", "title", "aid")
-        tree = ttk.Treeview(frm, columns=cols, show="headings", height=14)
+        tree = ttk.Treeview(frm, columns=cols, show="headings", height=13)
         tree.heading("ctype", text="类型")
         tree.heading("title", text="标题")
         tree.heading("aid", text="automation_id")
-        tree.column("ctype", width=100)
+        tree.column("ctype", width=100, stretch=False)
         tree.column("title", width=200)
         tree.column("aid", width=180)
         tree.pack(fill=tk.BOTH, expand=True)
+        # 标题列吸收多余宽度, 类型列固定 -> 窄窗口不产生横向滚动
+        apply_responsive_treeview_columns(tree, weights=[0, 2, 1])
 
         def refresh(filter_text=""):
             for i in tree.get_children():
@@ -238,16 +287,19 @@ class ClickPointEditorDialog(tk.Toplevel):
             dlg.destroy()
 
         tree.bind("<Double-1>", confirm)
+        filter_entry.bind("<Return>", lambda e: confirm())
 
         btn_bar = ttk.Frame(frm)
-        btn_bar.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(btn_bar, text="确定", command=confirm, width=12).pack(
-            side=tk.RIGHT, padx=5
+        btn_bar.pack(fill=tk.X, pady=(UISettings.PAD_SM, 0))
+        ttk.Button(btn_bar, text="确定", command=confirm, width=UISettings.BTN_WIDTH_MD).pack(
+            side=tk.RIGHT, padx=(UISettings.PAD_XS, 0)
         )
-        ttk.Button(btn_bar, text="取消", command=dlg.destroy, width=12).pack(
-            side=tk.RIGHT, padx=5
+        ttk.Button(btn_bar, text="取消", command=dlg.destroy, width=UISettings.BTN_WIDTH_MD).pack(
+            side=tk.RIGHT, padx=UISettings.PAD_XS
         )
 
+        # 几何收敛放到控件构建之后(此时才量得出内容尺寸)
+        fit_window_to_screen(dlg, "620x460", (480, 340))
         dlg.wait_window()
         return result["control"]
 
@@ -282,40 +334,44 @@ class ClickPointEditorDialog(tk.Toplevel):
     def _edit_coord_point(self, name, data):
         dlg = tk.Toplevel(self)
         dlg.title(f"编辑坐标: {name}")
-        dlg.geometry("380x280")
         dlg.configure(bg=UISettings.COLORS["bg_window"])
         dlg.transient(self)
         dlg.grab_set()
 
-        frm = ttk.Frame(dlg, padding=15)
+        frm = ttk.Frame(dlg, padding=UISettings.PAD_LG)
         frm.pack(fill=tk.BOTH, expand=True)
+        # 第 1 列放输入控件并吸收多余宽度 -> 窗口变宽时输入框跟着变宽而非留白
+        frm.grid_columnconfigure(1, weight=1)
 
-        ttk.Label(frm, text="X坐标:", font=(UISettings.FONT_FAMILY, 10)).grid(
-            row=0, column=0, sticky=tk.W, pady=8
+        ttk.Label(frm, text="X坐标:").grid(
+            row=0, column=0, sticky=tk.W, padx=(0, UISettings.PAD_SM), pady=UISettings.PAD_SM
         )
         x_var = tk.StringVar(value=str(data.get("x", 0)))
-        ttk.Entry(frm, textvariable=x_var, width=20).grid(row=0, column=1, sticky=tk.W, pady=8)
+        ttk.Entry(frm, textvariable=x_var).grid(
+            row=0, column=1, sticky=tk.EW, pady=UISettings.PAD_SM
+        )
 
-        ttk.Label(frm, text="Y坐标:", font=(UISettings.FONT_FAMILY, 10)).grid(
-            row=1, column=0, sticky=tk.W, pady=8
+        ttk.Label(frm, text="Y坐标:").grid(
+            row=1, column=0, sticky=tk.W, padx=(0, UISettings.PAD_SM), pady=UISettings.PAD_SM
         )
         y_var = tk.StringVar(value=str(data.get("y", 0)))
-        ttk.Entry(frm, textvariable=y_var, width=20).grid(row=1, column=1, sticky=tk.W, pady=8)
+        ttk.Entry(frm, textvariable=y_var).grid(
+            row=1, column=1, sticky=tk.EW, pady=UISettings.PAD_SM
+        )
 
-        ttk.Label(frm, text="按键方式:", font=(UISettings.FONT_FAMILY, 10)).grid(
-            row=2, column=0, sticky=tk.W, pady=8
+        ttk.Label(frm, text="按键方式:").grid(
+            row=2, column=0, sticky=tk.W, padx=(0, UISettings.PAD_SM), pady=UISettings.PAD_SM
         )
         btn_var = tk.StringVar(value=data.get("button", "left"))
         btn_combo = ttk.Combobox(
             frm,
             textvariable=btn_var,
             values=list(BUTTON_DISPLAY_VALUES.values()),
-            width=18,
             state="readonly",
         )
         current_btn = data.get("button", "left")
         btn_combo.set(BUTTON_DISPLAY_VALUES.get(current_btn, BUTTON_DISPLAY_VALUES["left"]))
-        btn_combo.grid(row=2, column=1, sticky=tk.W, pady=8)
+        btn_combo.grid(row=2, column=1, sticky=tk.EW, pady=UISettings.PAD_SM)
 
         def save():
             try:
@@ -331,53 +387,55 @@ class ClickPointEditorDialog(tk.Toplevel):
             self._refresh()
             dlg.destroy()
 
-        ttk.Button(frm, text="保存", command=save, width=12).grid(
-            row=3, column=0, columnspan=2, pady=15
+        bar = ttk.Frame(frm)
+        bar.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(UISettings.PAD_LG, 0))
+        ttk.Button(bar, text="保存", command=save, width=UISettings.BTN_WIDTH_MD).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="取消", command=dlg.destroy, width=UISettings.BTN_WIDTH_MD).pack(
+            side=tk.RIGHT, padx=(0, UISettings.PAD_SM)
         )
+
+        fit_window_to_screen(dlg, "420x300", (360, 260))
+        dlg.wait_window()
 
     def _edit_control_point(self, name, data):
         dlg = tk.Toplevel(self)
         dlg.title(f"编辑控件: {name}")
-        dlg.geometry("440x260")
         dlg.configure(bg=UISettings.COLORS["bg_window"])
         dlg.transient(self)
         dlg.grab_set()
 
-        frm = ttk.Frame(dlg, padding=15)
+        frm = ttk.Frame(dlg, padding=UISettings.PAD_LG)
         frm.pack(fill=tk.BOTH, expand=True)
+        frm.grid_columnconfigure(1, weight=1)
 
         ctype = data.get("control_type", "")
         title = data.get("title", "")
         auto_id = data.get("auto_id", "")
 
-        ttk.Label(frm, text="类型:", font=(UISettings.FONT_FAMILY, 10)).grid(
-            row=0, column=0, sticky=tk.W, pady=8
-        )
-        ttk.Label(frm, text=ctype or "-").grid(row=0, column=1, sticky=tk.W, pady=8)
+        rows = [("类型:", ctype or "-"), ("标题:", title or "-"), ("automation_id:", auto_id or "-")]
+        for r, (label, value) in enumerate(rows):
+            ttk.Label(frm, text=label).grid(
+                row=r, column=0, sticky=tk.W, padx=(0, UISettings.PAD_SM), pady=UISettings.PAD_SM
+            )
+            # 值可能很长(automation_id 尤甚): 用可换行标签, 避免撑宽窗口
+            ttk.Label(
+                frm, text=value, justify=tk.LEFT, anchor=tk.W, wraplength=260
+            ).grid(row=r, column=1, sticky=tk.EW, pady=UISettings.PAD_SM)
 
-        ttk.Label(frm, text="标题:", font=(UISettings.FONT_FAMILY, 10)).grid(
-            row=1, column=0, sticky=tk.W, pady=8
-        )
-        ttk.Label(frm, text=title or "-").grid(row=1, column=1, sticky=tk.W, pady=8)
-
-        ttk.Label(frm, text="automation_id:", font=(UISettings.FONT_FAMILY, 10)).grid(
-            row=2, column=0, sticky=tk.W, pady=8
-        )
-        ttk.Label(frm, text=auto_id or "-").grid(row=2, column=1, sticky=tk.W, pady=8)
-
-        ttk.Label(frm, text="按键方式:", font=(UISettings.FONT_FAMILY, 10)).grid(
-            row=3, column=0, sticky=tk.W, pady=8
+        ttk.Label(frm, text="按键方式:").grid(
+            row=3, column=0, sticky=tk.W, padx=(0, UISettings.PAD_SM), pady=UISettings.PAD_SM
         )
         btn_var = tk.StringVar(value=data.get("button", "left"))
         btn_combo = ttk.Combobox(
             frm,
             textvariable=btn_var,
             values=list(BUTTON_DISPLAY_VALUES.values()),
-            width=18,
             state="readonly",
         )
-        btn_combo.set(BUTTON_DISPLAY_VALUES.get(data.get("button", "left"), BUTTON_DISPLAY_VALUES["left"]))
-        btn_combo.grid(row=3, column=1, sticky=tk.W, pady=8)
+        btn_combo.set(
+            BUTTON_DISPLAY_VALUES.get(data.get("button", "left"), BUTTON_DISPLAY_VALUES["left"])
+        )
+        btn_combo.grid(row=3, column=1, sticky=tk.EW, pady=UISettings.PAD_SM)
 
         def save():
             btn_display = btn_var.get()
@@ -387,6 +445,12 @@ class ClickPointEditorDialog(tk.Toplevel):
             self._refresh()
             dlg.destroy()
 
-        ttk.Button(frm, text="保存", command=save, width=12).grid(
-            row=4, column=0, columnspan=2, pady=15
+        bar = ttk.Frame(frm)
+        bar.grid(row=4, column=0, columnspan=2, sticky=tk.EW, pady=(UISettings.PAD_LG, 0))
+        ttk.Button(bar, text="保存", command=save, width=UISettings.BTN_WIDTH_MD).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="取消", command=dlg.destroy, width=UISettings.BTN_WIDTH_MD).pack(
+            side=tk.RIGHT, padx=(0, UISettings.PAD_SM)
         )
+
+        fit_window_to_screen(dlg, "480x320", (400, 280))
+        dlg.wait_window()
